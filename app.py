@@ -7,7 +7,7 @@ from io import BytesIO
 from datetime import datetime
 import xlsxwriter
 
-st.set_page_config(page_title="IRBn ReportStream v3", layout="wide")
+st.set_page_config(page_title="IRBn ReportStream", layout="wide")
 st.title("📋 IRBn ReportStream v3 — Styled Excel Report")
 st.markdown("Paste one WhatsApp report at a time. Click **Extract & Add** to include it in today's structured report.")
 
