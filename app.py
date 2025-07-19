@@ -1,5 +1,3 @@
-# app_v3.py
-
 import streamlit as st
 import pandas as pd
 import re
@@ -7,22 +5,19 @@ from io import BytesIO
 from datetime import datetime
 import xlsxwriter
 
-st.set_page_config(page_title="IRBn ReportStream", layout="wide")
-st.title("📋 IRBn ReportStream — Styled Excel Report")
+st.set_page_config(page_title="IRBn ReportStream v3", layout="wide")
+st.title("📋 IRBn ReportStream v3 — Styled Excel Report")
 st.markdown("Paste one WhatsApp report at a time. Click **Extract & Add** to include it in today's structured report.")
 
-# Initialize report data
 if 'report_data' not in st.session_state:
     st.session_state['report_data'] = []
 
-# Normalization helper
-def normalize(value):
-    if not value or value.lower().strip() in ["nil", "none", "no", "no issue", "no any complaint", "-", "n/a"]:
+def normalize(val):
+    if not val or val.strip().lower() in ["none", "nil", "no", "no issue", "n/a", "not applicable", "-", ""]:
         return "Nil"
-    return value.strip()
+    return val.strip()
 
-# Smart field extraction with multiple patterns
-def extract_fields(text):
+def extract_fields_v3_5(text):
     def find(patterns, join_lines=False, fallback="Nil"):
         for pat in patterns:
             match = re.search(pat, text, re.IGNORECASE | re.DOTALL)
@@ -33,102 +28,92 @@ def extract_fields(text):
                 return normalize(val)
         return fallback
 
-    # Normalize common NIL responses
-    def normalize(val):
-        if not val or val.strip().lower() in ["none", "nil", "no", "no issue", "n/a", "not applicable", "-", ""]:
-            return "Nil"
-        return val.strip()
+    # Custom multi-part extraction for reserves
+    reserves_deployed = re.findall(r"(?i)(\d+\s*(?:officials|police personnel).*?)(?:\n|\))", text)
+    incharges = re.findall(r"(?i)incharge.*?:?\s*([A-Z][a-z]+.*?)(?:\n|$)", text)
+    durations = re.findall(r"(?:w\.e\.f\.|upto|till)\s*(\d{1,2}[./-]\d{1,2}[./-]?\d{2,4})", text)
+    districts = re.findall(r"(?i)district(?:\s+of)?\s*([A-Z][a-z]+)", text)
+    reserves_summary = ", ".join(reserves_deployed) + ", In-charge(s): " + ", ".join(incharges) + ", Duration(s): " + ", ".join(durations)
+    districts_summary = ", ".join(sorted(set(districts))) if districts else "Nil"
 
     return {
         "Name of IRBn/Bn": find([
-            r"Bn(?: No\.? and location)?\s*[:\-]\s*(.*)", 
-            r"^\s*(\d..*?IRBn.*?)\n", 
+            r"Bn(?: No\.? and location)?\s*[:\-]\s*(.*)",
+            r"^\s*(\d..*?IRBn.*?)\n",
             r"Bn\s*:\s*(.*?IRBn.*?)\n"
         ]),
 
-        "Reserves Deployed (Distt/Strength/Duration/In-Charge)": find([
-            r"(?:Detail[s]? of Bn Reserves(?: deployed)?\s*[:\-]?\s*)(.*?)(?:\n\s*\d+[\.\)]|2\.)", 
-            r"(1\.\s*Detail.*?)(?:\n2\.|\n\n2)", 
-            r"1\.\s*(.*?)\n\s*2[\.\)]"
-        ], join_lines=True),
+        "Reserves Deployed (Distt/Strength/Duration/In-Charge)": normalize(reserves_summary),
 
-        "District Deployed": find([
-            r"District[s]?\s*[:\-]?\s*(.*?)(?:\n|$)", 
-            r"deployed at\s+(.*?)\n", 
-            r"Deployed in\s+(.*?)\n", 
-            r"location\s*[:\-]?\s*(.*)"
-        ], join_lines=True),
+        "Districts where force deployed": normalize(districts_summary),
 
-        "Stay Arrangements / Bathrooms (Quality)": find([
-            r"Stay arrangements.*?:\s*(.*?)(?:\n\s*\d|\n3)", 
-            r"Stay arrangements/bathrooms.*?:\s*(.*)", 
+        "Stay Arrangement/Bathrooms (Quality)": find([
+            r"Stay arrangements.*?:\s*(.*?)(?:\n\s*\d|\n3)",
+            r"Stay arrangements/bathrooms.*?:\s*(.*?)\n",
             r"bathrooms.*?:\s*(.*?)\n"
         ], join_lines=True),
 
         "Messing Arrangements": find([
-            r"Messing arrangements.*?:\s*(.*?)\n", 
+            r"Messing arrangements.*?:\s*(.*?)\n",
             r"Mess arrangements.*?:\s*(.*?)\n"
         ], join_lines=True),
 
-        "CO’s Last Interaction with SP": find([
-            r"(?:CO.*?(spoke|interaction).*?)[:\-]?\s*(\d{1,2}[./\- ]\d{1,2}[./\- ]?\d{2,4})", 
-            r"CO.*?on\s*(\d{1,2}[./\- ]\d{1,2}[./\- ]?\d{2,4})"
-        ]),
+        "CO's last Interaction with SP": find([
+            r"(?:Date on which|On)\s.*?(spoke.*?\d{1,2}(?:st|nd|rd|th)?\s*[A-Za-z]+|\d{1,2}[./-]\d{1,2}[./-]\d{4}).*?",
+            r"personally.*?\s*(visited|spoke.*?)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{4})"
+        ], join_lines=True),
 
         "Disciplinary Issues": find([
-            r"disciplinary.*?:\s*(.*?)\n", 
+            r"disciplinary.*?:\s*(.*?)\n",
             r"indiscipline.*?:\s*(.*?)\n"
         ]),
 
         "Reserves Detained": find([
-            r"detained.*?:\s*(.*?)\n", 
+            r"detained.*?:\s*(.*?)\n",
             r"beyond duty.*?:\s*(.*?)\n"
         ]),
 
         "Training": find([
-            r"Training.*?:\s*(.*?)\n", 
+            r"Training.*?:\s*(.*?)(?:\n|$)",
             r"undergoing.*?:\s*(.*?)\n"
-        ]),
+        ], join_lines=True),
 
         "Welfare Initiative in Last 24 Hrs": find([
-            r"welfare.*?24\s*hrs.*?:\s*(.*?)\n", 
+            r"welfare.*?24\s*hrs.*?:\s*(.*?)\n",
             r"CSR.*?:\s*(.*?)\n"
         ], join_lines=True),
 
         "Reserves Available in Bn": find([
-            r"Reserves.*?available.*?:\s*(.*?)\n", 
+            r"Reserves.*?available.*?:\s*(.*?)\n",
             r"available.*?:\s*(.*?)\n"
         ]),
 
         "Issue for AP&T/PHQ": find([
-            r"requires.*?(?:attention|AP&T|PHQ).*?:\s*(.*?)\n", 
-            r"Issue.*?PHQ.*?:\s*(.*?)\n"
+            r"requires.*?(?:attention|AP&T|PHQ).*?:\s*(.*?)\n",
+            r"Issue.*?PHQ.*?:\s*(.*?)\n",
+            r"important issue.*?:\s*(.*?)\n"
         ])
     }
 
-
-# Input form
 with st.form("input_form"):
     input_text = st.text_area("📨 Paste WhatsApp Report Text Below", height=350)
     submitted = st.form_submit_button("➕ Extract & Add to Report")
 
     if submitted:
         if input_text.strip():
-            entry = extract_fields(input_text)
+            entry = extract_fields_v3_5(input_text)
             st.session_state['report_data'].append(entry)
             st.success("✅ Report extracted and added.")
         else:
             st.warning("⚠️ Please paste a report before submitting.")
 
-# Show current records
 if st.session_state['report_data']:
     st.markdown("### 📄 Today's Reports (Live View)")
     df = pd.DataFrame(st.session_state['report_data'])
-    df.index = df.index + 1  # For 1-based S. No.
+    df.index = df.index + 1
 
     st.dataframe(df, use_container_width=True)
 
-    # Excel formatting
     def styled_excel(df):
         output = BytesIO()
         today_str = datetime.today().strftime("%d/%m/%Y")
@@ -139,33 +124,28 @@ if st.session_state['report_data']:
             worksheet = workbook.add_worksheet("IRBn Report")
             writer.sheets["IRBn Report"] = worksheet
 
-            # Formats
             title_format = workbook.add_format({'bold': True, 'font_size': 14})
             header_format = workbook.add_format({'bold': True, 'bg_color': '#D9D9D9', 'border': 1})
             cell_format = workbook.add_format({'border': 1, 'text_wrap': True, 'valign': 'top'})
 
-            # Write title
             worksheet.merge_range('A1:M1', title, title_format)
 
-            # Write headers
             headers = ["S. No"] + list(df.columns)
             worksheet.write_row('A3', headers, header_format)
 
-            # Write data
             for row_num, row_data in enumerate(df.itertuples(), start=3):
-                worksheet.write(row_num, 0, row_num - 2, cell_format)  # S. No
+                worksheet.write(row_num, 0, row_num - 2, cell_format)
                 for col_num, val in enumerate(row_data[1:], start=1):
                     worksheet.write(row_num, col_num, val, cell_format)
 
-            # Set column widths
             worksheet.set_column('A:A', 6)
             worksheet.set_column('B:B', 25)
-            worksheet.set_column('C:C', 40)
-            worksheet.set_column('D:D', 15)
+            worksheet.set_column('C:C', 70)
+            worksheet.set_column('D:D', 25)
             worksheet.set_column('E:E', 30)
             worksheet.set_column('F:F', 25)
-            worksheet.set_column('G:G', 22)
-            worksheet.set_column('H:M', 20)
+            worksheet.set_column('G:G', 35)
+            worksheet.set_column('H:M', 25)
 
         output.seek(0)
         return output
