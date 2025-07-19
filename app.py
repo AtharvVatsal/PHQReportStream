@@ -17,7 +17,7 @@ def normalize(val):
         return "Nil"
     return val.strip()
 
-def extract_fields_v3_7(text):
+def extract_fields_v3_9(text):
     def find(patterns, join_lines=False, fallback="Nil"):
         for pat in patterns:
             match = re.search(pat, text, re.IGNORECASE | re.DOTALL)
@@ -34,23 +34,15 @@ def extract_fields_v3_7(text):
         r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n"
     ])
 
-    reserves_text_block = re.search(r"(?i)1\.\s*Detail of Bn Reserves deployed.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
-    reserves_summary = []
-    if reserves_text_block:
-        lines = reserves_text_block.group(0).splitlines()
-        current = []
+    reserves_block = re.search(r"(?i)1\..*?Reserves deployed.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
+    reserves_clean = "Nil"
+    if reserves_block:
+        lines = reserves_block.group(0).splitlines()
+        cleaned = []
         for line in lines:
-            line = line.strip()
-            if line.startswith("*") or line.startswith("("):
-                if current:
-                    reserves_summary.append(" ".join(current))
-                    current = []
-                current.append(line)
-            elif line:
-                current.append(line)
-        if current:
-            reserves_summary.append(" ".join(current))
-    reserves_clean = "; ".join([normalize(re.sub(r"^[*(]*", "", r.strip())) for r in reserves_summary]) or "Nil"
+            if any(keyword in line.lower() for keyword in ["reserve", "duration", "incharge", "duty", "official"]):
+                cleaned.append(line.strip("-* "))
+        reserves_clean = "; ".join([normalize(e) for e in cleaned if len(e) > 2])
 
     districts = re.findall(r"(?i)(?:district\s+of|distt\.?|district)\s*([A-Z][a-z]+)", text)
     ps_pp_matches = re.findall(r"(?i)(?:PS|PP)\s+([A-Z][a-z]+)", text)
@@ -70,8 +62,8 @@ def extract_fields_v3_7(text):
             r"food.*?(?:arranged|available).*?([^\.\n]*)"
         ], join_lines=True),
         "CO's last Interaction with SP": find([
-            r"(?:spoke|visited).*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
-            r"interaction.*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
+            r"(?:spoke.*?SP.*?|visited.*?)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+            r"interaction.*?on\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
         ], join_lines=True),
         "Disciplinary Issues": find([
             r"disciplinary issue.*?:\s*(.*?)\n",
@@ -106,7 +98,7 @@ with st.form("input_form"):
 
     if submitted:
         if input_text.strip():
-            entry = extract_fields_v3_7(input_text)
+            entry = extract_fields_v3_9(input_text)
             st.session_state['report_data'].append(entry)
             st.success("✅ Report extracted and added.")
         else:
