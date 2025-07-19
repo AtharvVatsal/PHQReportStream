@@ -17,7 +17,7 @@ def normalize(val):
         return "Nil"
     return val.strip()
 
-def extract_fields_v3_6(text):
+def extract_fields_v3_7(text):
     def find(patterns, join_lines=False, fallback="Nil"):
         for pat in patterns:
             match = re.search(pat, text, re.IGNORECASE | re.DOTALL)
@@ -28,85 +28,72 @@ def extract_fields_v3_6(text):
                 return normalize(val)
         return fallback
 
-    # Name of Battalion
     name_of_battalion = find([
         r"Bn\s*[:\-]\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
         r"^\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
         r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n"
     ])
 
-    # Reserves Deployed Info (Strength, Location, Duration, Incharge)
-    reserves_blocks = re.findall(
-        r"(?i)(\d{1,3})\s*(?:officials|police officials|personnel).*?(?:for\s+([\w\s]+?))?(?:at|in)?\s*([A-Za-z\-/()\s]+)?(?:\s*upto\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}))?.*?(?:(?:incharge.*?[:\-]\s*)([A-Za-z\s.]+?)(?:\n|$))?",
-        text
-    )
+    reserves_text_block = re.search(r"(?i)1\.\s*Detail of Bn Reserves deployed.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
     reserves_summary = []
-    for count, duty, location, duration, incharge in reserves_blocks:
-        parts = []
-        if location: parts.append(location.strip())
-        if duty: parts.append(duty.strip())
-        parts.append(f"{count.strip()} personnel")
-        if duration: parts.append(f"upto {duration.strip()}")
-        if incharge: parts.append(f"In-charge: {incharge.strip()}")
-        reserves_summary.append(" - ".join(parts))
-    reserves_final = ", ".join(reserves_summary) if reserves_summary else "Nil"
+    if reserves_text_block:
+        lines = reserves_text_block.group(0).splitlines()
+        current = []
+        for line in lines:
+            line = line.strip()
+            if line.startswith("*") or line.startswith("("):
+                if current:
+                    reserves_summary.append(" ".join(current))
+                    current = []
+                current.append(line)
+            elif line:
+                current.append(line)
+        if current:
+            reserves_summary.append(" ".join(current))
+    reserves_clean = "; ".join([normalize(re.sub(r"^[*(]*", "", r.strip())) for r in reserves_summary]) or "Nil"
 
-    # Districts
-    districts = re.findall(r"(?i)(?:district\s+of|distt\.|district)\s*([A-Z][a-z]+)", text)
-    pstation = re.findall(r"(?i)PS\s+([A-Z][a-z]+)|PP\s+([A-Z][a-z]+)", text)
-    station_list = [x for grp in pstation for x in grp if x]
-    all_districts = sorted(set(districts + station_list)) if (districts or station_list) else ["Nil"]
+    districts = re.findall(r"(?i)(?:district\s+of|distt\.?|district)\s*([A-Z][a-z]+)", text)
+    ps_pp_matches = re.findall(r"(?i)(?:PS|PP)\s+([A-Z][a-z]+)", text)
+    all_districts = sorted(set(districts + ps_pp_matches)) if (districts or ps_pp_matches) else ["Nil"]
 
     return {
         "Name of IRBn/Bn": name_of_battalion,
-
-        "Reserves Deployed (Distt/Strength/Duration/In-Charge)": reserves_final,
-
+        "Reserves Deployed (Distt/Strength/Duration/In-Charge)": reserves_clean,
         "Districts where force deployed": ", ".join(all_districts),
-
         "Stay Arrangement/Bathrooms (Quality)": find([
             r"Stay arrangements.*?:\s*(.*?)(?:\n\s*\d|\n\*|\n3|\n4|\n$)",
             r"bathrooms.*?:\s*(.*?)\n"
         ], join_lines=True),
-
         "Messing Arrangements": find([
             r"Messing arrangements.*?:\s*(.*?)\n",
             r"Mess arrangements.*?:\s*(.*?)\n",
-            r"food.*?(?:arranged|available).*?([^.\n]*)"
+            r"food.*?(?:arranged|available).*?([^\.\n]*)"
         ], join_lines=True),
-
         "CO's last Interaction with SP": find([
-            r"(?:spoke|visited).*?(?:on)?\s*(\d{1,2}(?:th)?\s*(?:[A-Za-z]+)|\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+            r"(?:spoke|visited).*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
             r"interaction.*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
         ], join_lines=True),
-
         "Disciplinary Issues": find([
             r"disciplinary issue.*?:\s*(.*?)\n",
-            r"indiscipline.*?:\s*(.*?)\n",
-            r"discipline.*?:\s*(.*?)\n"
+            r"indiscipline.*?:\s*(.*?)\n"
         ], join_lines=True),
-
         "Reserves Detained": find([
             r"detained.*?:\s*(.*?)\n",
             r"beyond duty.*?:\s*(.*?)\n"
         ]),
-
         "Training": find([
             r"Training.*?:\s*(.*?)(?:\n|$)",
             r"experience sharing.*?\n(.*?)\n"
         ], join_lines=True),
-
         "Welfare Initiative in Last 24 Hrs": find([
             r"welfare.*?:\s*(.*?)\n",
             r"CSR.*?:\s*(.*?)\n",
-            r"workshop.*?([^.\n]*)"
+            r"workshop.*?([^\.\n]*)"
         ], join_lines=True),
-
         "Reserves Available in Bn": find([
             r"Reserves.*?available.*?:\s*(.*?)\n",
             r"available.*?:\s*(.*?)\n"
         ]),
-
         "Issue for AP&T/PHQ": find([
             r"issue.*?PHQ.*?:\s*(.*?)\n",
             r"requires.*?attention.*?:\s*(.*?)\n"
@@ -119,7 +106,7 @@ with st.form("input_form"):
 
     if submitted:
         if input_text.strip():
-            entry = extract_fields_v3_6(input_text)
+            entry = extract_fields_v3_7(input_text)
             st.session_state['report_data'].append(entry)
             st.success("✅ Report extracted and added.")
         else:
@@ -168,7 +155,7 @@ if st.session_state['report_data']:
         output.seek(0)
         return output
 
-    st.download_button("📥 Download Styled Excel Report", data=styled_excel(df), file_name="IRBn_Consolidated_Report.xlsx")
+    st.download_button("📅 Download Styled Excel Report", data=styled_excel(df), file_name="IRBn_Consolidated_Report.xlsx")
 
     if st.button("🔁 Reset Table for New Day"):
         st.session_state['report_data'] = []
