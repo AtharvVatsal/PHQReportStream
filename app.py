@@ -28,26 +28,30 @@ def extract_fields_v3_6(text):
                 return normalize(val)
         return fallback
 
+    # Name of Battalion
     name_of_battalion = find([
         r"Bn\s*[:\-]\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
         r"^\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
         r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n"
     ])
 
-    reserves_matches = re.findall(
-        r"(?i)(\d{1,3})\s*(?:officials|police officials|personnel).*?(?:at|in)?\s*([A-Za-z\-/()\s]+)?(?:\s*upto\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}))?.*?(?:(?:incharge.*?[:\-]\s*)([A-Za-z\s.]+?)(?:\n|$))?",
+    # Reserves Deployed Info (Strength, Location, Duration, Incharge)
+    reserves_blocks = re.findall(
+        r"(?i)(\d{1,3})\s*(?:officials|police officials|personnel).*?(?:for\s+([\w\s]+?))?(?:at|in)?\s*([A-Za-z\-/()\s]+)?(?:\s*upto\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}))?.*?(?:(?:incharge.*?[:\-]\s*)([A-Za-z\s.]+?)(?:\n|$))?",
         text
     )
     reserves_summary = []
-    for rm in reserves_matches:
-        count, location, duration, incharge = rm
+    for count, duty, location, duration, incharge in reserves_blocks:
         parts = []
         if location: parts.append(location.strip())
-        parts.append(f"{count} personnel")
+        if duty: parts.append(duty.strip())
+        parts.append(f"{count.strip()} personnel")
         if duration: parts.append(f"upto {duration.strip()}")
         if incharge: parts.append(f"In-charge: {incharge.strip()}")
         reserves_summary.append(" - ".join(parts))
+    reserves_final = ", ".join(reserves_summary) if reserves_summary else "Nil"
 
+    # Districts
     districts = re.findall(r"(?i)(?:district\s+of|distt\.|district)\s*([A-Z][a-z]+)", text)
     pstation = re.findall(r"(?i)PS\s+([A-Z][a-z]+)|PP\s+([A-Z][a-z]+)", text)
     station_list = [x for grp in pstation for x in grp if x]
@@ -56,7 +60,7 @@ def extract_fields_v3_6(text):
     return {
         "Name of IRBn/Bn": name_of_battalion,
 
-        "Reserves Deployed (Distt/Strength/Duration/In-Charge)": ", ".join(reserves_summary) if reserves_summary else "Nil",
+        "Reserves Deployed (Distt/Strength/Duration/In-Charge)": reserves_final,
 
         "Districts where force deployed": ", ".join(all_districts),
 
@@ -72,13 +76,14 @@ def extract_fields_v3_6(text):
         ], join_lines=True),
 
         "CO's last Interaction with SP": find([
-            r"(?:spoke|visited).*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+            r"(?:spoke|visited).*?(?:on)?\s*(\d{1,2}(?:th)?\s*(?:[A-Za-z]+)|\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
             r"interaction.*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
         ], join_lines=True),
 
         "Disciplinary Issues": find([
             r"disciplinary issue.*?:\s*(.*?)\n",
-            r"indiscipline.*?:\s*(.*?)\n"
+            r"indiscipline.*?:\s*(.*?)\n",
+            r"discipline.*?:\s*(.*?)\n"
         ], join_lines=True),
 
         "Reserves Detained": find([
