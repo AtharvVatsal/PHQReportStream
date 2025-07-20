@@ -1,66 +1,154 @@
-
-import os
-import re
+import streamlit as st
 import pandas as pd
+import re
+from io import BytesIO
 from datetime import datetime
-from docx import Document
-from openpyxl import Workbook, load_workbook
+import xlsxwriter
 
-# Define column headers for the output Excel
-columns = [
-    "Name of IRBn/Bn", "Reserves Deployed (Distt/Strength/Duration/In-Charge)",
-    "Districts where force deployed", "Stay Arrangement/Bathrooms (Quality)",
-    "Messing Arrangements", "CO's last Interaction with SP",
-    "Disciplinary Issues", "Reserves Detained", "Training",
-    "Welfare Initiative in Last 24 Hrs", "Reserves Available in Bn",
-    "Issue for AP&T/PHQ"
-]
+st.set_page_config(page_title="IRBn ReportStream v3", layout="wide")
+st.title("📋 IRBn ReportStream v3 — Styled Excel Report")
+st.markdown("Paste one WhatsApp report at a time. Click **Extract & Add** to include it in today's structured report.")
 
-# Initialize the workbook and worksheet
-output_path = "/mnt/data/IRBn_Daily_Report_Compiled.xlsx"
-if not os.path.exists(output_path):
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Consolidated Report"
-    sheet.append(columns)
-    workbook.save(output_path)
-else:
-    workbook = load_workbook(output_path)
-    sheet = workbook.active
+if 'report_data' not in st.session_state:
+    st.session_state['report_data'] = []
 
-# Directory containing Word files
-input_dir = "/mnt/data"
-files = [f for f in os.listdir(input_dir) if f.endswith(".docx")]
+def normalize(val):
+    if not val or val.strip().lower() in ["none", "nil", "no", "no issue", "n/a", "not applicable", "-", ""]:
+        return "Nil"
+    return val.strip()
 
-for file in files:
-    doc_path = os.path.join(input_dir, file)
-    doc = Document(doc_path)
+def extract_fields_v3_9(text):
+    def find(patterns, join_lines=False, fallback="Nil"):
+        for pat in patterns:
+            match = re.search(pat, text, re.IGNORECASE | re.DOTALL)
+            if match:
+                val = match.group(1).strip()
+                if join_lines:
+                    val = ' '.join(val.splitlines()).strip()
+                return normalize(val)
+        return fallback
 
-    full_text = "\n".join([para.text.strip() for para in doc.paragraphs if para.text.strip()])
-
-    def extract(pattern, group=1, default="Nil"):
-        match = re.search(pattern, full_text, re.IGNORECASE | re.DOTALL)
-        return match.group(group).strip() if match else default
-
-    bn_name = extract(r"Bn\s*:?\s*(?:No\.\s*)?(.*?)(?=Name of CO|Name & Rank|Name of C.O|1\.|\n)", default="Unknown Bn").replace("Bn", "Bn").strip(":- ")
-    deployed = extract(r"1[\.\)]\s*Detail.*?Reserves.*?:\s*(.*?)(?=2[\.\)]|Stay arrangements|\n3[\.\)])", default="Nil")
-    deployed_cleaned = " ".join(deployed.split())
-    districts = ", ".join(sorted(set(re.findall(r"(Shimla|Kullu|Mandi|Solan|Sirmaur|Bilaspur|Kangra|Nahan|Chamba|Hamirpur|Una|Lahaul|Spiti|Kinnaur|Baddi|Dharamshala|D/Shala|Nagrota|Pandoh|Jangalberi|Bassi|Sakoh|Kotkhai|Nirmand|Thunag|Kaithu|Kanda)", deployed, re.IGNORECASE))))
-    stay = extract(r"2[\.\)]\s*Stay arrangements.*?:\s*(.*?)(?=3[\.\)]|\n4[\.\)])", default="Nil").replace("\n", " ")
-    mess = extract(r"3[\.\)]\s*Messing arrangements.*?:\s*(.*?)(?=4[\.\)]|\n5[\.\)])", default="Nil").replace("\n", " ")
-    interaction = extract(r"4[\.\)]\s*Date on which CO.*?\s*:?\s*(.*?)(?=5[\.\)]|\n6[\.\)])", default="Nil").replace("\n", " ")
-    discipline = extract(r"5[\.\)]\s*Any (incident of )?disciplinary issue.*?:\s*(.*?)(?=6[\.\)]|\n7[\.\)])", default="Nil").replace("\n", " ")
-    detained = extract(r"6[\.\)]\s*Reserves detained.*?:\s*(.*?)(?=7[\.\)]|\n8[\.\)])", default="Nil").replace("\n", " ")
-    training = extract(r"7[\.\)]\s*Training.*?:\s*(.*?)(?=8[\.\)]|\n9[\.\)])", default="Nil").replace("\n", " ")
-    welfare = extract(r"8[\.\)]\s*Any Initiative.*?:\s*(.*?)(?=9[\.\)]|\n10[\.\)])", default="Nil").replace("\n", " ")
-    reserves = extract(r"9[\.\)]\s*Reserves.*?:\s*(.*?)(?=10[\.\)]|\n11[\.\)])", default="Nil").replace("\n", " ")
-    issue = extract(r"10[\.\)]\s*Any other issue.*?:\s*(.*)", default="Nil").replace("\n", " ")
-
-    sheet.append([
-        bn_name, deployed_cleaned, districts, stay, mess,
-        interaction, discipline, detained, training, welfare,
-        reserves, issue
+    name_of_battalion = find([
+        r"Bn\s*[:\-]\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
+        r"^\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
+        r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n"
     ])
 
-# Save the final workbook
-workbook.save(output_path)
+    reserves_block = re.search(r"(?i)1\..*?Reserves deployed.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
+    reserves_clean = "Nil"
+    if reserves_block:
+        lines = reserves_block.group(0).splitlines()
+        cleaned = []
+        for line in lines:
+            if any(keyword in line.lower() for keyword in ["reserve", "duration", "incharge", "duty", "official"]):
+                cleaned.append(line.strip("-* "))
+        reserves_clean = "; ".join([normalize(e) for e in cleaned if len(e) > 2])
+
+    districts = re.findall(r"(?i)(?:district\s+of|distt\.?|district)\s*([A-Z][a-z]+)", text)
+    ps_pp_matches = re.findall(r"(?i)(?:PS|PP)\s+([A-Z][a-z]+)", text)
+    all_districts = sorted(set(districts + ps_pp_matches)) if (districts or ps_pp_matches) else ["Nil"]
+
+    return {
+        "Name of IRBn/Bn": name_of_battalion,
+        "Reserves Deployed (Distt/Strength/Duration/In-Charge)": reserves_clean,
+        "Districts where force deployed": ", ".join(all_districts),
+        "Stay Arrangement/Bathrooms (Quality)": find([
+            r"Stay arrangements.*?:\s*(.*?)(?:\n\s*\d|\n\*|\n3|\n4|\n$)",
+            r"bathrooms.*?:\s*(.*?)\n"
+        ], join_lines=True),
+        "Messing Arrangements": find([
+            r"Messing arrangements.*?:\s*(.*?)\n",
+            r"Mess arrangements.*?:\s*(.*?)\n",
+            r"food.*?(?:arranged|available).*?([^\.\n]*)"
+        ], join_lines=True),
+        "CO's last Interaction with SP": find([
+            r"(?:spoke.*?SP.*?|visited.*?)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+            r"interaction.*?on\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
+        ], join_lines=True),
+        "Disciplinary Issues": find([
+            r"disciplinary issue.*?:\s*(.*?)\n",
+            r"indiscipline.*?:\s*(.*?)\n"
+        ], join_lines=True),
+        "Reserves Detained": find([
+            r"detained.*?:\s*(.*?)\n",
+            r"beyond duty.*?:\s*(.*?)\n"
+        ]),
+        "Training": find([
+            r"Training.*?:\s*(.*?)(?:\n|$)",
+            r"experience sharing.*?\n(.*?)\n"
+        ], join_lines=True),
+        "Welfare Initiative in Last 24 Hrs": find([
+            r"welfare.*?:\s*(.*?)\n",
+            r"CSR.*?:\s*(.*?)\n",
+            r"workshop.*?([^\.\n]*)"
+        ], join_lines=True),
+        "Reserves Available in Bn": find([
+            r"Reserves.*?available.*?:\s*(.*?)\n",
+            r"available.*?:\s*(.*?)\n"
+        ]),
+        "Issue for AP&T/PHQ": find([
+            r"issue.*?PHQ.*?:\s*(.*?)\n",
+            r"requires.*?attention.*?:\s*(.*?)\n"
+        ])
+    }
+
+with st.form("input_form"):
+    input_text = st.text_area("📨 Paste WhatsApp Report Text Below", height=350)
+    submitted = st.form_submit_button("➕ Extract & Add to Report")
+
+    if submitted:
+        if input_text.strip():
+            entry = extract_fields_v3_9(input_text)
+            st.session_state['report_data'].append(entry)
+            st.success("✅ Report extracted and added.")
+        else:
+            st.warning("⚠️ Please paste a report before submitting.")
+
+if st.session_state['report_data']:
+    st.markdown("### 📄 Today's Reports (Live View)")
+    df = pd.DataFrame(st.session_state['report_data'])
+    df.index = df.index + 1
+
+    st.dataframe(df, use_container_width=True)
+
+    def styled_excel(df):
+        output = BytesIO()
+        today_str = datetime.today().strftime("%d/%m/%Y")
+        title = f"Consolidated Daily Status Report of All IRBn/Bns as on {today_str}"
+
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            workbook = writer.book
+            worksheet = workbook.add_worksheet("IRBn Report")
+            writer.sheets["IRBn Report"] = worksheet
+
+            title_format = workbook.add_format({'bold': True, 'font_size': 14})
+            header_format = workbook.add_format({'bold': True, 'bg_color': '#D9D9D9', 'border': 1})
+            cell_format = workbook.add_format({'border': 1, 'text_wrap': True, 'valign': 'top'})
+
+            worksheet.merge_range('A1:M1', title, title_format)
+
+            headers = ["S. No"] + list(df.columns)
+            worksheet.write_row('A3', headers, header_format)
+
+            for row_num, row_data in enumerate(df.itertuples(), start=3):
+                worksheet.write(row_num, 0, row_num - 2, cell_format)
+                for col_num, val in enumerate(row_data[1:], start=1):
+                    worksheet.write(row_num, col_num, val, cell_format)
+
+            worksheet.set_column('A:A', 6)
+            worksheet.set_column('B:B', 25)
+            worksheet.set_column('C:C', 70)
+            worksheet.set_column('D:D', 25)
+            worksheet.set_column('E:E', 30)
+            worksheet.set_column('F:F', 25)
+            worksheet.set_column('G:G', 35)
+            worksheet.set_column('H:M', 25)
+
+        output.seek(0)
+        return output
+
+    st.download_button("📅 Download Styled Excel Report", data=styled_excel(df), file_name="IRBn_Consolidated_Report.xlsx")
+
+    if st.button("🔁 Reset Table for New Day"):
+        st.session_state['report_data'] = []
+        st.success("✅ Table reset for a new report cycle.")
