@@ -17,91 +17,86 @@ def normalize(val):
         return "Nil"
     return val.strip()
 
-def clean_line(line):
-    return re.sub(r"^[-\*\d\.\)\s]+", "", line).strip()
+def extract_fields_v3_10(text):
+    def find(patterns, join_lines=False, fallback="Nil"):
+        for pat in patterns:
+            match = re.search(pat, text, re.IGNORECASE | re.DOTALL)
+            if match:
+                val = match.group(1).strip()
+                if join_lines:
+                    val = ' '.join(val.splitlines()).strip()
+                return normalize(val)
+        return fallback
 
-def extract_fields(text):
-    def block(pattern):
-        m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-        return m.group(1).strip() if m else ""
+    name_of_battalion = find([
+        r"Bn\s*[:\-]\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
+        r"^\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
+        r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n"
+    ])
 
-    def line(pattern):
-        m = re.search(pattern, text, re.IGNORECASE)
-        return normalize(m.group(1)) if m else "Nil"
+    reserves_block = re.search(r"(?i)1\..*?Reserves.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
+    reserves_block = re.search(r"(?i)1\..*?Reserves.*?(?=\n\d+\.|\n\*\s|\n[a-zA-Z]|\Z)", text, re.DOTALL)
+    reserves_clean = "Nil"
+    if reserves_block:
+        lines = reserves_block.group(0).splitlines()
+        cleaned = []
+        for line in lines:
+            if any(keyword in line.lower() for keyword in ["reserve", "duration", "incharge", "official", "strength"]):
+            if any(keyword in line.lower() for keyword in ["reserve", "duration", "incharge", "official", "strength", "personnel"]):
+                cleaned.append(line.strip("-* "))
+        reserves_clean = "; ".join([normalize(e) for e in cleaned if len(e) > 2])
 
-    def all_matches(pattern):
-        return re.findall(pattern, text, re.IGNORECASE)
-
-    name = line(r"Bn\s*[:\-]\s*(\d+.*?(?:IRBn|HPAP).*?)\n")
-    if name == "Nil":
-        name = line(r"^(\d+.*?(?:IRBn|HPAP).*?)\n")
-    if name == "Nil":
-        name = line(r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n")
-
-    reserves_raw = block(r"1\..*?reserves.*?(?=\n\d+\.|\Z|Stay arrangement)".replace(" ", "\\s"))
-    reserves_clean = []
-    for l in reserves_raw.splitlines():
-        if any(w in l.lower() for w in ["reserve", "official"]):
-            reserves_clean.append(clean_line(l))
-    reserves_clean = "; ".join(reserves_clean) or "Nil"
-
-    districts = set(all_matches(r"(?:(?:district|distt)\.?|district of)\s*([A-Z][a-z]+)"))
-    districts |= set(all_matches(r"(?:PS|PP)\s+([A-Z][a-z]+)"))
-    districts_joined = ", ".join(sorted(districts)) if districts else "Nil"
-
-    stay = block(r"stay arrangements.*?:\s*(.*?)\n") or block(r"bathroom.*?:\s*(.*?)\n")
-    stay = clean_line(stay)
-    if stay and not stay.lower().startswith("mess") and "good" not in stay.lower():
-        stay = f"{stay} - Good"
-    stay = normalize(stay)
-
-    mess = block(r"messing arrangements.*?:\s*(.*?)\n")
-    mess = normalize(mess)
-    if mess.lower().startswith("pl"):
-        mess = f"Mess at {mess}"
-
-    interaction = line(r"(?:spoke|interaction|talked|last spoke).*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})")
-    try:
-        if interaction != "Nil":
-            interaction = datetime.strptime(interaction.replace("-", "/").replace(".", "/"), "%d/%m/%Y").strftime("%d.%m.%Y")
-    except:
-        interaction = "Nil"
-
-    disciplinary = line(r"disciplinary.*?:\s*(.*?)\n")
-    if disciplinary == "Nil":
-        disciplinary = line(r"indiscipline.*?:\s*(.*?)\n")
-
-    detained = line(r"detained.*?:\s*(.*?)\n")
-    if detained == "Nil":
-        detained = line(r"beyond.*?without.*?:\s*(.*?)\n")
-
-    training = line(r"training.*?:\s*(.*?)\n")
-
-    welfare = line(r"welfare.*?:\s*(.*?)\n")
-    if welfare == "Nil":
-        welfare = line(r"CSR.*?:\s*(.*?)\n")
-    if welfare == "Nil":
-        welfare = line(r"initiative.*?:\s*(.*?)\n")
-
-    reserves_avail = line(r"available.*?:\s*(.*?)\n")
-
-    issue_ap = line(r"issue.*?(PHQ|AP&T).*?:\s*(.*?)\n")
-    if issue_ap == "Nil":
-        issue_ap = line(r"requires.*?attention.*?:\s*(.*?)\n")
+    districts = re.findall(r"(?i)(?:(?:district|distt)\.?|district of)\s*([A-Z][a-z]+)", text)
+    ps_pp_matches = re.findall(r"(?i)(?:PS|PP)\s+([A-Z][a-z]+)", text)
+    all_districts = sorted(set(districts + ps_pp_matches)) if (districts or ps_pp_matches) else ["Nil"]
 
     return {
-        "Name of IRBn/Bn": name,
-        "Reserves Deployed (Distt/Strength/Duration/In-Charge)": normalize(reserves_clean),
-        "Districts where force Deployed": normalize(districts_joined),
-        "Stay Arrangements/Bathroom (Quality)": normalize(stay),
-        "Messing Arrangements": mess,
-        "CO's Last Interaction with SP": interaction,
-        "Disciplinary Issues": disciplinary,
-        "Reserves Detained": detained,
-        "Training": training,
-        "Welfare Initiative in Last 24 Hrs": welfare,
-        "Reserves Available in Bn": reserves_avail,
-        "Issues for AP&T/PHQ": issue_ap,
+        "Name of IRBn/Bn": name_of_battalion,
+        "Reserves Deployed (Distt/Strength/Duration/In-Charge)": reserves_clean,
+        "Districts where force deployed": ", ".join(all_districts),
+        "Stay Arrangement/Bathrooms (Quality)": find([
+            r"Stay arrangements.*?:\s*(.*?)(?:\n\s*\d|\n\*|\n3|\n4|\n$)",
+            r"Stay arrangements.*?:\s*(.*?)(?:\n\d|\n\*|\n[a-zA-Z]|\Z)",
+            r"bathrooms.*?:\s*(.*?)\n"
+        ], join_lines=True),
+        "Messing Arrangements": find([
+            r"Messing arrangements.*?:\s*(.*?)\n",
+            r"Mess arrangements.*?:\s*(.*?)\n",
+            r"food.*?(?:arranged|available).*?([^.\n]*)"
+            r"food.*?(?:arranged|available).*?([^\.\n]*)"
+        ], join_lines=True),
+        "CO's last Interaction with SP": find([
+            r"(?:spoke.*?SP.*?|visited.*?)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+            r"interaction.*?on\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+            r"(?:spoke|talked).*?SP.*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
+        ], join_lines=True),
+        "Disciplinary Issues": find([
+            r"disciplinary issue.*?:\s*(.*?)\n",
+            r"indiscipline.*?:\s*(.*?)\n"
+        ], join_lines=True),
+        "Reserves Detained": find([
+            r"detained.*?:\s*(.*?)\n",
+            r"beyond duty.*?:\s*(.*?)\n",
+            r"Reserves detained.*?(\d+.*?)\n"
+            r"Reserves detained.*?([\w\W]{5,50})"
+        ]),
+        "Training": find([
+            r"Training.*?:\s*(.*?)(?:\n|$)",
+            r"experience sharing.*?\n(.*?)\n"
+        ], join_lines=True),
+        "Welfare Initiative in Last 24 Hrs": find([
+            r"welfare.*?:\s*(.*?)\n",
+            r"CSR.*?:\s*(.*?)\n",
+            r"initiative.*?:\s*(.*?)\n"
+        ], join_lines=True),
+        "Reserves Available in Bn": find([
+            r"Reserves.*?available.*?:\s*(.*?)\n",
+            r"available.*?:\s*(.*?)\n"
+        ]),
+        "Issue for AP&T/PHQ": find([
+            r"issue.*?PHQ.*?:\s*(.*?)\n",
+            r"requires.*?attention.*?:\s*(.*?)\n"
+        ])
     }
 
 with st.form("input_form"):
@@ -110,12 +105,9 @@ with st.form("input_form"):
 
     if submitted:
         if input_text.strip():
-            try:
-                entry = extract_fields(input_text)
-                st.session_state['report_data'].append(entry)
-                st.success("✅ Report extracted and added.")
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
+            entry = extract_fields_v3_10(input_text)
+            st.session_state['report_data'].append(entry)
+            st.success("✅ Report extracted and added.")
         else:
             st.warning("⚠️ Please paste a report before submitting.")
 
@@ -153,7 +145,7 @@ if st.session_state['report_data']:
             worksheet.set_column('A:A', 6)
             worksheet.set_column('B:B', 25)
             worksheet.set_column('C:C', 70)
-            worksheet.set_column('D:D', 30)
+            worksheet.set_column('D:D', 25)
             worksheet.set_column('E:E', 30)
             worksheet.set_column('F:F', 25)
             worksheet.set_column('G:G', 35)
