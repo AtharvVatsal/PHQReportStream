@@ -4,6 +4,9 @@ import re
 from io import BytesIO
 from datetime import datetime
 import xlsxwriter
+import spacy
+
+nlp = spacy.load("en_core_web_sm")
 
 st.set_page_config(page_title="IRBn ReportStream v3", layout="wide")
 st.title("📋 IRBn ReportStream v3 — Styled Excel Report")
@@ -16,6 +19,25 @@ def normalize(val):
     if not val or val.strip().lower() in ["none", "nil", "no", "no issue", "n/a", "not applicable", "-", ""]:
         return "Nil"
     return val.strip()
+
+def spacy_clean_text(text):
+    doc = nlp(text)
+    cleaned = []
+    for sent in doc.sents:
+        s = sent.text.strip()
+        if any(w in s.lower() for w in ["reserve", "deployment", "duration", "incharge", "strength", "official", "posted", "attached"]):
+            s = re.sub(r"^[-\*\d\.\)]+", "", s)
+            cleaned.append(s)
+    return "; ".join(cleaned) if cleaned else "Nil"
+
+def enforce_standard_phrasing(field_value, field_name):
+    if field_name == "Messing Arrangements":
+        if "pl" in field_value.lower():
+            return f"Mess at {field_value.strip()}"
+    if field_name == "Stay Arrangement/Bathrooms (Quality)":
+        if not any(w in field_value.lower() for w in ["good", "adequate", "excellent"]):
+            return f"{field_value} - Good"
+    return field_value
 
 def extract_fields_v3_10(text):
     def find(patterns, join_lines=False, fallback="Nil"):
@@ -35,32 +57,31 @@ def extract_fields_v3_10(text):
     ])
 
     reserves_block = re.search(r"(?i)1\..*?Reserves.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
-    reserves_clean = "Nil"
-    if reserves_block:
-        lines = reserves_block.group(0).splitlines()
-        cleaned = []
-        for line in lines:
-            if any(keyword in line.lower() for keyword in ["reserve", "duration", "incharge", "official", "strength", "duty"]):
-                cleaned.append(line.strip("-* "))
-        reserves_clean = "; ".join([normalize(e) for e in cleaned if len(e) > 2])
+    reserves_clean = spacy_clean_text(reserves_block.group(0)) if reserves_block else "Nil"
 
     districts = re.findall(r"(?i)(?:(?:district|distt)\.?|district of)\s*([A-Z][a-z]+)", text)
     ps_pp_matches = re.findall(r"(?i)(?:PS|PP)\s+([A-Z][a-z]+)", text)
     all_districts = sorted(set(districts + ps_pp_matches)) if (districts or ps_pp_matches) else ["Nil"]
 
+    stay = find([
+        r"Stay arrangements.*?:\s*(.*?)(?:\n\s*\d|\n\*|\n3|\n4|\n$)",
+        r"bathrooms.*?:\s*(.*?)\n"
+    ], join_lines=True)
+    stay = enforce_standard_phrasing(stay, "Stay Arrangement/Bathrooms (Quality)")
+
+    mess = find([
+        r"Messing arrangements.*?:\s*(.*?)\n",
+        r"Mess arrangements.*?:\s*(.*?)\n",
+        r"food.*?(?:arranged|available).*?([^\.\n]*)"
+    ], join_lines=True)
+    mess = enforce_standard_phrasing(mess, "Messing Arrangements")
+
     return {
         "Name of IRBn/Bn": name_of_battalion,
         "Reserves Deployed (Distt/Strength/Duration/In-Charge)": reserves_clean,
         "Districts where force deployed": ", ".join(all_districts),
-        "Stay Arrangement/Bathrooms (Quality)": find([
-            r"Stay arrangements.*?:\s*(.*?)(?:\n\s*\d|\n\*|\n3|\n4|\n$)",
-            r"bathrooms.*?:\s*(.*?)\n"
-        ], join_lines=True),
-        "Messing Arrangements": find([
-            r"Messing arrangements.*?:\s*(.*?)\n",
-            r"Mess arrangements.*?:\s*(.*?)\n",
-            r"food.*?(?:arranged|available).*?([^\.\n]*)"
-        ], join_lines=True),
+        "Stay Arrangement/Bathrooms (Quality)": stay,
+        "Messing Arrangements": mess,
         "CO's last Interaction with SP": find([
             r"(?:spoke.*?SP.*?|visited.*?)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
             r"interaction.*?on\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
