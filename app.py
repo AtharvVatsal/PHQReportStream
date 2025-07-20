@@ -39,7 +39,11 @@ def extract_fields(text):
         name = line(r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n")
 
     reserves_raw = block(r"1\..*?reserves.*?(?=\n\d+\.|\Z|Stay arrangement)".replace(" ", "\\s"))
-    reserves_clean = "; ".join([clean_line(l) for l in reserves_raw.splitlines() if any(w in l.lower() for w in ["reserve", "official"])]) or "Nil"
+    reserves_clean = []
+    for l in reserves_raw.splitlines():
+        if any(w in l.lower() for w in ["reserve", "official"]):
+            reserves_clean.append(clean_line(l))
+    reserves_clean = "; ".join(reserves_clean) or "Nil"
 
     districts = set(all_matches(r"(?:(?:district|distt)\.?|district of)\s*([A-Z][a-z]+)"))
     districts |= set(all_matches(r"(?:PS|PP)\s+([A-Z][a-z]+)"))
@@ -56,7 +60,7 @@ def extract_fields(text):
     if mess.lower().startswith("pl"):
         mess = f"Mess at {mess}"
 
-    interaction = line(r"(?:spoke|interaction|talked).*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})")
+    interaction = line(r"(?:spoke|interaction|talked|last spoke).*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})")
     try:
         if interaction != "Nil":
             interaction = datetime.strptime(interaction.replace("-", "/").replace(".", "/"), "%d/%m/%Y").strftime("%d.%m.%Y")
@@ -106,9 +110,12 @@ with st.form("input_form"):
 
     if submitted:
         if input_text.strip():
-            entry = extract_fields(input_text)
-            st.session_state['report_data'].append(entry)
-            st.success("✅ Report extracted and added.")
+            try:
+                entry = extract_fields(input_text)
+                st.session_state['report_data'].append(entry)
+                st.success("✅ Report extracted and added.")
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
         else:
             st.warning("⚠️ Please paste a report before submitting.")
 
