@@ -17,6 +17,7 @@ def normalize(val):
         return "Nil"
     return val.strip()
 
+def extract_fields_v3_9(text):
 def extract_fields_v3_10(text):
     def find(patterns, join_lines=False, fallback="Nil"):
         for pat in patterns:
@@ -34,18 +35,19 @@ def extract_fields_v3_10(text):
         r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n"
     ])
 
+    reserves_block = re.search(r"(?i)1\..*?Reserves deployed.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
     reserves_block = re.search(r"(?i)1\..*?Reserves.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
-    reserves_block = re.search(r"(?i)1\..*?Reserves.*?(?=\n\d+\.|\n\*\s|\n[a-zA-Z]|\Z)", text, re.DOTALL)
     reserves_clean = "Nil"
     if reserves_block:
         lines = reserves_block.group(0).splitlines()
         cleaned = []
         for line in lines:
+            if any(keyword in line.lower() for keyword in ["reserve", "duration", "incharge", "duty", "official"]):
             if any(keyword in line.lower() for keyword in ["reserve", "duration", "incharge", "official", "strength"]):
-            if any(keyword in line.lower() for keyword in ["reserve", "duration", "incharge", "official", "strength", "personnel"]):
                 cleaned.append(line.strip("-* "))
         reserves_clean = "; ".join([normalize(e) for e in cleaned if len(e) > 2])
 
+    districts = re.findall(r"(?i)(?:district\s+of|distt\.?|district)\s*([A-Z][a-z]+)", text)
     districts = re.findall(r"(?i)(?:(?:district|distt)\.?|district of)\s*([A-Z][a-z]+)", text)
     ps_pp_matches = re.findall(r"(?i)(?:PS|PP)\s+([A-Z][a-z]+)", text)
     all_districts = sorted(set(districts + ps_pp_matches)) if (districts or ps_pp_matches) else ["Nil"]
@@ -56,17 +58,17 @@ def extract_fields_v3_10(text):
         "Districts where force deployed": ", ".join(all_districts),
         "Stay Arrangement/Bathrooms (Quality)": find([
             r"Stay arrangements.*?:\s*(.*?)(?:\n\s*\d|\n\*|\n3|\n4|\n$)",
-            r"Stay arrangements.*?:\s*(.*?)(?:\n\d|\n\*|\n[a-zA-Z]|\Z)",
             r"bathrooms.*?:\s*(.*?)\n"
         ], join_lines=True),
         "Messing Arrangements": find([
             r"Messing arrangements.*?:\s*(.*?)\n",
             r"Mess arrangements.*?:\s*(.*?)\n",
-            r"food.*?(?:arranged|available).*?([^.\n]*)"
             r"food.*?(?:arranged|available).*?([^\.\n]*)"
+            r"food.*?(?:arranged|available).*?([^.\n]*)"
         ], join_lines=True),
         "CO's last Interaction with SP": find([
             r"(?:spoke.*?SP.*?|visited.*?)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+            r"interaction.*?on\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
             r"interaction.*?on\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
             r"(?:spoke|talked).*?SP.*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
         ], join_lines=True),
@@ -76,9 +78,9 @@ def extract_fields_v3_10(text):
         ], join_lines=True),
         "Reserves Detained": find([
             r"detained.*?:\s*(.*?)\n",
+            r"beyond duty.*?:\s*(.*?)\n"
             r"beyond duty.*?:\s*(.*?)\n",
             r"Reserves detained.*?(\d+.*?)\n"
-            r"Reserves detained.*?([\w\W]{5,50})"
         ]),
         "Training": find([
             r"Training.*?:\s*(.*?)(?:\n|$)",
@@ -87,6 +89,7 @@ def extract_fields_v3_10(text):
         "Welfare Initiative in Last 24 Hrs": find([
             r"welfare.*?:\s*(.*?)\n",
             r"CSR.*?:\s*(.*?)\n",
+            r"workshop.*?([^\.\n]*)"
             r"initiative.*?:\s*(.*?)\n"
         ], join_lines=True),
         "Reserves Available in Bn": find([
@@ -105,6 +108,7 @@ with st.form("input_form"):
 
     if submitted:
         if input_text.strip():
+            entry = extract_fields_v3_9(input_text)
             entry = extract_fields_v3_10(input_text)
             st.session_state['report_data'].append(entry)
             st.success("✅ Report extracted and added.")
