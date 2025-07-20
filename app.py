@@ -17,62 +17,87 @@ def normalize(val):
         return "Nil"
     return val.strip()
 
+def clean_line(line):
+    return re.sub(r"^[-\*\d\.\)\s]+", "", line).strip()
+
 def extract_fields(text):
-    def search(patterns, fallback="Nil", join=False):
-        for pat in patterns:
-            match = re.search(pat, text, re.IGNORECASE | re.DOTALL)
-            if match:
-                val = match.group(1).strip()
-                return ' '.join(val.splitlines()).strip() if join else val.strip()
-        return fallback
+    def block(pattern):
+        m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+        return m.group(1).strip() if m else ""
 
-    name = search([r"Bn\s*[:\-]\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
-                   r"^\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
-                   r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n"])
+    def line(pattern):
+        m = re.search(pattern, text, re.IGNORECASE)
+        return normalize(m.group(1)) if m else "Nil"
 
-    reserves_block = re.search(r"(?i)1\..*?Reserves.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
-    reserves_clean = "Nil"
-    if reserves_block:
-        reserves_text = reserves_block.group(0)
-        # Clean structured extract attempt
-        parts = []
-        matches = re.findall(r"(?:Reserve|officials).*?(?=\n|$)", reserves_text, re.IGNORECASE)
-        for m in matches:
-            parts.append(m.strip("-* "))
-        reserves_clean = "; ".join(parts) if parts else "Nil"
+    def all_matches(pattern):
+        return re.findall(pattern, text, re.IGNORECASE)
 
-    districts = sorted(set(re.findall(r"(?i)(?:(?:district|distt)\.?|district of)\s*([A-Z][a-z]+)", text) +
-                          re.findall(r"(?i)(?:PS|PP)\s+([A-Z][a-z]+)", text)))
-    districts_joined = ", ".join(districts) if districts else "Nil"
+    name = line(r"Bn\s*[:\-]\s*(\d+.*?(?:IRBn|HPAP).*?)\n")
+    if name == "Nil":
+        name = line(r"^(\d+.*?(?:IRBn|HPAP).*?)\n")
+    if name == "Nil":
+        name = line(r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n")
 
-    stay = search([r"stay.*?arrangements.*?:\s*(.*?)(?:\n|$)",
-                   r"bathroom.*?:\s*(.*?)(?:\n|$)"], join=True)
-    if stay.lower().startswith("pl"):
+    reserves_raw = block(r"1\..*?reserves.*?(?=\n\d+\.|\Z|Stay arrangement)".replace(" ", "\\s"))
+    reserves_clean = "; ".join([clean_line(l) for l in reserves_raw.splitlines() if any(w in l.lower() for w in ["reserve", "official"])]) or "Nil"
+
+    districts = set(all_matches(r"(?:(?:district|distt)\.?|district of)\s*([A-Z][a-z]+)"))
+    districts |= set(all_matches(r"(?:PS|PP)\s+([A-Z][a-z]+)"))
+    districts_joined = ", ".join(sorted(districts)) if districts else "Nil"
+
+    stay = block(r"stay arrangements.*?:\s*(.*?)\n") or block(r"bathroom.*?:\s*(.*?)\n")
+    stay = clean_line(stay)
+    if stay and not stay.lower().startswith("mess") and "good" not in stay.lower():
         stay = f"{stay} - Good"
-    stay = f"Mess at {stay}" if "mess" not in stay.lower() and "good" not in stay.lower() else stay
+    stay = normalize(stay)
 
-    mess = search([r"messing.*?:\s*(.*?)(?:\n|$)",
-                   r"food.*?(?:arranged|available).*?([^\.\n]*)"], join=True)
-    mess = f"Mess at {mess}" if mess.lower().startswith("pl") else mess
+    mess = block(r"messing arrangements.*?:\s*(.*?)\n")
+    mess = normalize(mess)
+    if mess.lower().startswith("pl"):
+        mess = f"Mess at {mess}"
 
-    co_interaction = search([r"(?:spoke.*?SP.*?|visited.*?)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
-                             r"interaction.*?on\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
-                             r"(?:spoke|talked).*?SP.*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"], join=True)
-    co_interaction = datetime.strptime(co_interaction.replace(".", "/"), "%d/%m/%Y").strftime("%d.%m.%Y") if co_interaction != "Nil" else "Nil"
+    interaction = line(r"(?:spoke|interaction|talked).*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})")
+    try:
+        if interaction != "Nil":
+            interaction = datetime.strptime(interaction.replace("-", "/").replace(".", "/"), "%d/%m/%Y").strftime("%d.%m.%Y")
+    except:
+        interaction = "Nil"
+
+    disciplinary = line(r"disciplinary.*?:\s*(.*?)\n")
+    if disciplinary == "Nil":
+        disciplinary = line(r"indiscipline.*?:\s*(.*?)\n")
+
+    detained = line(r"detained.*?:\s*(.*?)\n")
+    if detained == "Nil":
+        detained = line(r"beyond.*?without.*?:\s*(.*?)\n")
+
+    training = line(r"training.*?:\s*(.*?)\n")
+
+    welfare = line(r"welfare.*?:\s*(.*?)\n")
+    if welfare == "Nil":
+        welfare = line(r"CSR.*?:\s*(.*?)\n")
+    if welfare == "Nil":
+        welfare = line(r"initiative.*?:\s*(.*?)\n")
+
+    reserves_avail = line(r"available.*?:\s*(.*?)\n")
+
+    issue_ap = line(r"issue.*?(PHQ|AP&T).*?:\s*(.*?)\n")
+    if issue_ap == "Nil":
+        issue_ap = line(r"requires.*?attention.*?:\s*(.*?)\n")
 
     return {
-        "Name of IRBn/Bn": normalize(name),
+        "Name of IRBn/Bn": name,
         "Reserves Deployed (Distt/Strength/Duration/In-Charge)": normalize(reserves_clean),
-        "Districts where force Deployed": districts_joined,
+        "Districts where force Deployed": normalize(districts_joined),
         "Stay Arrangements/Bathroom (Quality)": normalize(stay),
-        "Messing Arrangements": normalize(mess),
-        "CO's Last Interaction with SP": normalize(co_interaction),
-        "Disciplinary Issues": search([r"discipline.*?:\s*(.*?)(?:\n|$)", r"indiscipline.*?:\s*(.*?)(?:\n|$)"], join=True),
-        "Reserves Detained": search([r"detained.*?:\s*(.*?)(?:\n|$)", r"beyond.*?without.*?:\s*(.*?)(?:\n|$)"]),
-        "Training": search([r"training.*?:\s*(.*?)(?:\n|$)", r"experience.*?:\s*(.*?)(?:\n|$)"], join=True),
-        "Welfare Initiative in Last 24 Hrs": search([r"welfare.*?:\s*(.*?)(?:\n|$)", r"CSR.*?:\s*(.*?)(?:\n|$)", r"initiative.*?:\s*(.*?)(?:\n|$)"], join=True),
-        "Reserves Available in Bn": search([r"available.*?:\s*(.*?)(?:\n|$)"], join=True),
-        "Issues for AP&T/PHQ": search([r"issue.*?(?:PHQ|AP&T).*?:\s*(.*?)(?:\n|$)", r"requires.*?attention.*?:\s*(.*?)(?:\n|$)"])
+        "Messing Arrangements": mess,
+        "CO's Last Interaction with SP": interaction,
+        "Disciplinary Issues": disciplinary,
+        "Reserves Detained": detained,
+        "Training": training,
+        "Welfare Initiative in Last 24 Hrs": welfare,
+        "Reserves Available in Bn": reserves_avail,
+        "Issues for AP&T/PHQ": issue_ap,
     }
 
 with st.form("input_form"):
