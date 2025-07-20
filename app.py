@@ -20,24 +20,20 @@ def normalize(val):
         return "Nil"
     return val.strip()
 
-def spacy_clean_text(text):
-    doc = nlp(text)
-    cleaned = []
-    for sent in doc.sents:
-        s = sent.text.strip()
-        if any(w in s.lower() for w in ["reserve", "deployment", "duration", "incharge", "strength", "official", "posted", "attached"]):
-            s = re.sub(r"^[-\*\d\.\)]+", "", s)
-            cleaned.append(s)
-    return "; ".join(cleaned) if cleaned else "Nil"
+def extract_reserves_clean(text):
+    match = re.search(r"(?i)1\..*?Reserves.*?(?=\n\d+\.|\n*Stay arrangements|\Z)", text, re.DOTALL)
+    if not match:
+        return "Nil"
 
-def enforce_standard_phrasing(field_value, field_name):
-    if field_name == "Messing Arrangements":
-        if "pl" in field_value.lower():
-            return f"Mess at {field_value.strip()}"
-    if field_name == "Stay Arrangement/Bathrooms (Quality)":
-        if not any(w in field_value.lower() for w in ["good", "adequate", "excellent"]):
-            return f"{field_value} - Good"
-    return field_value
+    doc = nlp(match.group(0))
+    sentences = []
+    for sent in doc.sents:
+        sent_text = sent.text.strip()
+        if any(kw in sent_text.lower() for kw in ["reserve", "incharge", "duration", "deployed", "duty", "strength", "official"]):
+            clean = re.sub(r"^[\-*\d.\)\s]+", "", sent_text)
+            if clean:
+                sentences.append(normalize(clean))
+    return "; ".join(sentences) if sentences else "Nil"
 
 def extract_fields_v3_10(text):
     def find(patterns, join_lines=False, fallback="Nil"):
@@ -56,32 +52,25 @@ def extract_fields_v3_10(text):
         r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n"
     ])
 
-    reserves_block = re.search(r"(?i)1\..*?Reserves.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
-    reserves_clean = spacy_clean_text(reserves_block.group(0)) if reserves_block else "Nil"
+    reserves_clean = extract_reserves_clean(text)
 
     districts = re.findall(r"(?i)(?:(?:district|distt)\.?|district of)\s*([A-Z][a-z]+)", text)
     ps_pp_matches = re.findall(r"(?i)(?:PS|PP)\s+([A-Z][a-z]+)", text)
     all_districts = sorted(set(districts + ps_pp_matches)) if (districts or ps_pp_matches) else ["Nil"]
 
-    stay = find([
-        r"Stay arrangements.*?:\s*(.*?)(?:\n\s*\d|\n\*|\n3|\n4|\n$)",
-        r"bathrooms.*?:\s*(.*?)\n"
-    ], join_lines=True)
-    stay = enforce_standard_phrasing(stay, "Stay Arrangement/Bathrooms (Quality)")
-
-    mess = find([
-        r"Messing arrangements.*?:\s*(.*?)\n",
-        r"Mess arrangements.*?:\s*(.*?)\n",
-        r"food.*?(?:arranged|available).*?([^\.\n]*)"
-    ], join_lines=True)
-    mess = enforce_standard_phrasing(mess, "Messing Arrangements")
-
     return {
         "Name of IRBn/Bn": name_of_battalion,
         "Reserves Deployed (Distt/Strength/Duration/In-Charge)": reserves_clean,
         "Districts where force deployed": ", ".join(all_districts),
-        "Stay Arrangement/Bathrooms (Quality)": stay,
-        "Messing Arrangements": mess,
+        "Stay Arrangement/Bathrooms (Quality)": find([
+            r"Stay arrangements.*?:\s*(.*?)(?:\n\s*\d|\n\*|\n3|\n4|\n$)",
+            r"bathrooms.*?:\s*(.*?)\n"
+        ], join_lines=True),
+        "Messing Arrangements": find([
+            r"Messing arrangements.*?:\s*(.*?)\n",
+            r"Mess arrangements.*?:\s*(.*?)\n",
+            r"food.*?(?:arranged|available).*?([^\.\n]*)"
+        ], join_lines=True),
         "CO's last Interaction with SP": find([
             r"(?:spoke.*?SP.*?|visited.*?)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
             r"interaction.*?on\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
@@ -115,7 +104,6 @@ def extract_fields_v3_10(text):
             r"requires.*?attention.*?:\s*(.*?)\n"
         ])
     }
-
 with st.form("input_form"):
     input_text = st.text_area("📨 Paste WhatsApp Report Text Below", height=350)
     submitted = st.form_submit_button("➕ Extract & Add to Report")
