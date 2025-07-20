@@ -34,13 +34,13 @@ def extract_fields_v3_10(text):
         r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n"
     ])
 
-    reserves_block = re.search(r"(?i)1\..*?Reserves.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
+    reserves_block = re.search(r"(?i)1\..*?Reserves.*?(?=\n\d+\.|\n\*\s|\n[a-zA-Z]|\Z)", text, re.DOTALL)
     reserves_clean = "Nil"
     if reserves_block:
         lines = reserves_block.group(0).splitlines()
         cleaned = []
         for line in lines:
-            if any(keyword in line.lower() for keyword in ["reserve", "duration", "incharge", "official", "strength"]):
+            if any(keyword in line.lower() for keyword in ["reserve", "duration", "incharge", "official", "strength", "personnel"]):
                 cleaned.append(line.strip("-* "))
         reserves_clean = "; ".join([normalize(e) for e in cleaned if len(e) > 2])
 
@@ -53,13 +53,13 @@ def extract_fields_v3_10(text):
         "Reserves Deployed (Distt/Strength/Duration/In-Charge)": reserves_clean,
         "Districts where force deployed": ", ".join(all_districts),
         "Stay Arrangement/Bathrooms (Quality)": find([
-            r"Stay arrangements.*?:\s*(.*?)(?:\n\s*\d|\n\*|\n3|\n4|\n$)",
+            r"Stay arrangements.*?:\s*(.*?)(?:\n\d|\n\*|\n[a-zA-Z]|\Z)",
             r"bathrooms.*?:\s*(.*?)\n"
         ], join_lines=True),
         "Messing Arrangements": find([
             r"Messing arrangements.*?:\s*(.*?)\n",
             r"Mess arrangements.*?:\s*(.*?)\n",
-            r"food.*?(?:arranged|available).*?([^.\n]*)"
+            r"food.*?(?:arranged|available).*?([^\.\n]*)"
         ], join_lines=True),
         "CO's last Interaction with SP": find([
             r"(?:spoke.*?SP.*?|visited.*?)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
@@ -73,7 +73,7 @@ def extract_fields_v3_10(text):
         "Reserves Detained": find([
             r"detained.*?:\s*(.*?)\n",
             r"beyond duty.*?:\s*(.*?)\n",
-            r"Reserves detained.*?(\d+.*?)\n"
+            r"Reserves detained.*?([\w\W]{5,50})"
         ]),
         "Training": find([
             r"Training.*?:\s*(.*?)(?:\n|$)",
