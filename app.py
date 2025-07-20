@@ -18,86 +18,62 @@ def normalize(val):
     return val.strip()
 
 def extract_fields(text):
-    def normalize(val):
-        if not val or str(val).strip().lower() in ["none", "nil", "no", "no issue", "n/a", "-", ""]:
-            return "Nil"
-        return str(val).strip()
-
-    def clean_date(val):
-        try:
-            val = re.sub(r"[^\d./-]", "", val)
-            return datetime.strptime(val, "%d.%m.%Y").strftime("%d.%m.%Y")
-        except:
-            try:
-                return datetime.strptime(val, "%d/%m/%Y").strftime("%d.%m.%Y")
-            except:
-                return "Nil"
-
-    def find(patterns, join=False):
+    def search(patterns, fallback="Nil", join=False):
         for pat in patterns:
             match = re.search(pat, text, re.IGNORECASE | re.DOTALL)
             if match:
-                result = match.group(1).strip()
-                return ' '.join(result.splitlines()).strip() if join else result
-        return "Nil"
+                val = match.group(1).strip()
+                return ' '.join(val.splitlines()).strip() if join else val.strip()
+        return fallback
 
-    # Extract Bn Name
-    name = find([
-        r"(?:(?:Bn|Battalion)\s*[:\-])\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
-        r"^\s*(\d+.*?(?:IRBn|HPAP).*?)\n"
-    ])
+    name = search([r"Bn\s*[:\-]\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
+                   r"^\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
+                   r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n"])
 
-    # Extract reserves deployed - clean structured form
-    reserves_block = find([r"1\..*?Reserves.*?(?=\n\d+\.|\n*Stay arrangements|\Z)"], join=True)
+    reserves_block = re.search(r"(?i)1\..*?Reserves.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
     reserves_clean = "Nil"
-    if reserves_block and "reserve" in reserves_block.lower():
-        entries = re.findall(r"(?i)(\d+).*?Reserve.*?\((\d+).*?\).*?at (.*?)(?:upto|till|w\.e\.f\.).*?(?:till|upto|w\.e\.f\.)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}).*?(?:In[-\s]?charge[:\-]?\s*|Incharge[:\-]?\s*)([^.;\n]+)", reserves_block)
-        if entries:
-            formatted = []
-            for e in entries:
-                count, strength, location, till, officer = e
-                dt = clean_date(till)
-                formatted.append(f"{count} Reserves ({strength}) at {location} upto {dt}, In-Charge: {officer}")
-            reserves_clean = "; ".join(formatted)
-        else:
-            # fallback: combine all lines starting with *
-            fallback_lines = re.findall(r"^\*.*$", reserves_block, re.MULTILINE)
-            reserves_clean = ' '.join(line.strip("*- ") for line in fallback_lines) if fallback_lines else "Nil"
+    if reserves_block:
+        reserves_text = reserves_block.group(0)
+        # Clean structured extract attempt
+        parts = []
+        matches = re.findall(r"(?:Reserve|officials).*?(?=\n|$)", reserves_text, re.IGNORECASE)
+        for m in matches:
+            parts.append(m.strip("-* "))
+        reserves_clean = "; ".join(parts) if parts else "Nil"
 
-    # Extract district(s)
     districts = sorted(set(re.findall(r"(?i)(?:(?:district|distt)\.?|district of)\s*([A-Z][a-z]+)", text) +
                           re.findall(r"(?i)(?:PS|PP)\s+([A-Z][a-z]+)", text)))
     districts_joined = ", ".join(districts) if districts else "Nil"
 
-    # Stay & Messing Standardization
-    stay = find([r"stay.*?:\s*(.*)", r"bathroom.*?:\s*(.*)"], join=True)
-    stay = f"Staying at {stay}" if "pl" in stay.lower() else normalize(stay)
+    stay = search([r"stay.*?arrangements.*?:\s*(.*?)(?:\n|$)",
+                   r"bathroom.*?:\s*(.*?)(?:\n|$)"], join=True)
+    if stay.lower().startswith("pl"):
+        stay = f"{stay} - Good"
+    stay = f"Mess at {stay}" if "mess" not in stay.lower() and "good" not in stay.lower() else stay
 
-    mess = find([r"messing.*?:\s*(.*)", r"food.*?arranged.*?([^\.\n]*)"], join=True)
-    mess = f"Mess at {mess}" if "pl" in mess.lower() and "mess" not in mess.lower() else normalize(mess)
+    mess = search([r"messing.*?:\s*(.*?)(?:\n|$)",
+                   r"food.*?(?:arranged|available).*?([^\.\n]*)"], join=True)
+    mess = f"Mess at {mess}" if mess.lower().startswith("pl") else mess
 
-    # Interaction with SP
-    interaction_text = find([
-        r"(?:spoke.*?SP.*?)(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
-        r"(?:interaction.*?on|visited.*?on)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
-    ])
-    co_interaction = clean_date(interaction_text)
+    co_interaction = search([r"(?:spoke.*?SP.*?|visited.*?)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+                             r"interaction.*?on\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+                             r"(?:spoke|talked).*?SP.*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"], join=True)
+    co_interaction = datetime.strptime(co_interaction.replace(".", "/"), "%d/%m/%Y").strftime("%d.%m.%Y") if co_interaction != "Nil" else "Nil"
 
     return {
         "Name of IRBn/Bn": normalize(name),
         "Reserves Deployed (Distt/Strength/Duration/In-Charge)": normalize(reserves_clean),
-        "Districts where force Deployed": normalize(districts_joined),
+        "Districts where force Deployed": districts_joined,
         "Stay Arrangements/Bathroom (Quality)": normalize(stay),
         "Messing Arrangements": normalize(mess),
         "CO's Last Interaction with SP": normalize(co_interaction),
-        "Disciplinary Issues": find([r"discipline.*?:\s*(.*)", r"indiscipline.*?:\s*(.*)"]),
-        "Reserves Detained": find([r"detained.*?:\s*(.*)", r"beyond.*?without.*?:\s*(.*)"]),
-        "Training": find([r"training.*?:\s*(.*)", r"experience.*?:\s*(.*)"], join=True),
-        "Welfare Initiative in Last 24 Hrs": find([r"welfare.*?:\s*(.*)", r"CSR.*?:\s*(.*)", r"initiative.*?:\s*(.*)"]),
-        "Reserves Available in Bn": find([r"available.*?:\s*(.*)"]),
-        "Issues for AP&T/PHQ": find([r"(?:issue|requires).*?(?:PHQ|AP&T).*?:\s*(.*)"])
+        "Disciplinary Issues": search([r"discipline.*?:\s*(.*?)(?:\n|$)", r"indiscipline.*?:\s*(.*?)(?:\n|$)"], join=True),
+        "Reserves Detained": search([r"detained.*?:\s*(.*?)(?:\n|$)", r"beyond.*?without.*?:\s*(.*?)(?:\n|$)"]),
+        "Training": search([r"training.*?:\s*(.*?)(?:\n|$)", r"experience.*?:\s*(.*?)(?:\n|$)"], join=True),
+        "Welfare Initiative in Last 24 Hrs": search([r"welfare.*?:\s*(.*?)(?:\n|$)", r"CSR.*?:\s*(.*?)(?:\n|$)", r"initiative.*?:\s*(.*?)(?:\n|$)"], join=True),
+        "Reserves Available in Bn": search([r"available.*?:\s*(.*?)(?:\n|$)"], join=True),
+        "Issues for AP&T/PHQ": search([r"issue.*?(?:PHQ|AP&T).*?:\s*(.*?)(?:\n|$)", r"requires.*?attention.*?:\s*(.*?)(?:\n|$)"])
     }
-
 
 with st.form("input_form"):
     input_text = st.text_area("📨 Paste WhatsApp Report Text Below", height=350)
