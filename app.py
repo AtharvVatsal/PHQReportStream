@@ -15,78 +15,64 @@ if 'report_data' not in st.session_state:
 def normalize(val):
     if not val or val.strip().lower() in ["none", "nil", "no", "no issue", "n/a", "not applicable", "-", ""]:
         return "Nil"
-    return val.strip().replace("\\n", " ").replace("\\r", " ")
+    return val.strip()
 
-def extract_fields_v4(text):
-    def find(patterns, join_lines=False, fallback="Nil"):
+def extract_fields(text):
+    def search(patterns, fallback="Nil", join=False):
         for pat in patterns:
             match = re.search(pat, text, re.IGNORECASE | re.DOTALL)
             if match:
                 val = match.group(1).strip()
-                if join_lines:
-                    val = ' '.join(val.splitlines()).strip()
-                return normalize(val)
+                return ' '.join(val.splitlines()).strip() if join else val.strip()
         return fallback
 
-    name_of_battalion = find([
-        r"Bn\s*[:\-]\s*(\d+.*?(?:IRBn|HPAP).*?)\\n",
-        r"^\\s*(\\d+.*?(?:IRBn|HPAP).*?)\\n",
-        r"Bn\\s+No\\.? and Location\\s*[:\\-]\\s*(.*?)\\n"
-    ])
+    name = search([r"Bn\s*[:\-]\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
+                   r"^\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
+                   r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n"])
 
-    reserves_block = re.search(r"(?i)1[\\.\\)]\\s+.*?Reserves.*?(?=\\n\\d[\\.\\)]|\\Z)", text, re.DOTALL)
+    reserves_block = re.search(r"(?i)1\..*?Reserves.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
     reserves_clean = "Nil"
     if reserves_block:
-        block = reserves_block.group(0)
-        reserves_clean = ' '.join([normalize(line.strip("-•* ")) for line in block.splitlines() if len(line.strip()) > 1])
+        reserves_text = reserves_block.group(0)
+        # Clean structured extract attempt
+        parts = []
+        matches = re.findall(r"(?:Reserve|officials).*?(?=\n|$)", reserves_text, re.IGNORECASE)
+        for m in matches:
+            parts.append(m.strip("-* "))
+        reserves_clean = "; ".join(parts) if parts else "Nil"
 
-    districts = list(set(re.findall(r"(?i)(?:(?:district|distt|Distt\\.|District of)\\s*:?)([A-Z][a-z]+)", text)))
-    ps_matches = re.findall(r"(?i)(?:(?:PS|PP)\\s+([A-Z][a-z]+))", text)
-    all_districts = sorted(set(districts + ps_matches)) if (districts or ps_matches) else ["Nil"]
+    districts = sorted(set(re.findall(r"(?i)(?:(?:district|distt)\.?|district of)\s*([A-Z][a-z]+)", text) +
+                          re.findall(r"(?i)(?:PS|PP)\s+([A-Z][a-z]+)", text)))
+    districts_joined = ", ".join(districts) if districts else "Nil"
+
+    stay = search([r"stay.*?arrangements.*?:\s*(.*?)(?:\n|$)",
+                   r"bathroom.*?:\s*(.*?)(?:\n|$)"], join=True)
+    if stay.lower().startswith("pl"):
+        stay = f"{stay} - Good"
+    stay = f"Mess at {stay}" if "mess" not in stay.lower() and "good" not in stay.lower() else stay
+
+    mess = search([r"messing.*?:\s*(.*?)(?:\n|$)",
+                   r"food.*?(?:arranged|available).*?([^\.\n]*)"], join=True)
+    mess = f"Mess at {mess}" if mess.lower().startswith("pl") else mess
+
+    co_interaction = search([r"(?:spoke.*?SP.*?|visited.*?)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+                             r"interaction.*?on\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+                             r"(?:spoke|talked).*?SP.*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"], join=True)
+    co_interaction = datetime.strptime(co_interaction.replace(".", "/"), "%d/%m/%Y").strftime("%d.%m.%Y") if co_interaction != "Nil" else "Nil"
 
     return {
-        "Name of IRBn/Bn": name_of_battalion,
-        "Reserves Deployed (Distt/Strength/Duration/In-Charge)": reserves_clean,
-        "Districts where force deployed": ", ".join(all_districts),
-        "Stay Arrangement/Bathrooms (Quality)": find([
-            r"Stay arrangements.*?[:\\-]\\s*(.*?)(?=\\n\\d[\\.\\)]|\\n\\*|\\n3|\\n4|\\n$)",
-            r"bathrooms.*?[:\\-]\\s*(.*?)\\n"
-        ], join_lines=True),
-        "Messing Arrangements": find([
-            r"Messing arrangements.*?[:\\-]\\s*(.*?)\\n",
-            r"Mess arrangements.*?[:\\-]\\s*(.*?)\\n",
-            r"food.*?(?:arranged|available).*?([^\\.\\n]*)"
-        ], join_lines=True),
-        "CO's last Interaction with SP": find([
-            r"(?:spoke.*?SP.*?|visited.*?)\\s*(\\d{1,2}[./-]\\d{1,2}[./-]\\d{2,4})",
-            r"interaction.*?on\\s*(\\d{1,2}[./-]\\d{1,2}[./-]\\d{2,4})"
-        ], join_lines=True),
-        "Disciplinary Issues": find([
-            r"disciplinary issue.*?[:\\-]\\s*(.*?)\\n",
-            r"indiscipline.*?[:\\-]\\s*(.*?)\\n"
-        ], join_lines=True),
-        "Reserves Detained": find([
-            r"detained.*?[:\\-]\\s*(.*?)\\n",
-            r"beyond duty.*?[:\\-]\\s*(.*?)\\n",
-            r"Reserves detained.*?(\\d+.*?)\\n"
-        ]),
-        "Training": find([
-            r"Training.*?[:\\-]\\s*(.*?)(?:\\n|$)",
-            r"experience sharing.*?\\n(.*?)\\n"
-        ], join_lines=True),
-        "Welfare Initiative in Last 24 Hrs": find([
-            r"welfare.*?[:\\-]\\s*(.*?)\\n",
-            r"CSR.*?[:\\-]\\s*(.*?)\\n",
-            r"initiative.*?[:\\-]\\s*(.*?)\\n"
-        ], join_lines=True),
-        "Reserves Available in Bn": find([
-            r"Reserves.*?available.*?[:\\-]\\s*(.*?)\\n",
-            r"available.*?[:\\-]\\s*(.*?)\\n"
-        ]),
-        "Issue for AP&T/PHQ": find([
-            r"issue.*?PHQ.*?[:\\-]\\s*(.*?)\\n",
-            r"requires.*?attention.*?[:\\-]\\s*(.*?)\\n"
-        ])
+        "Name of IRBn/Bn": normalize(name),
+        "Reserves Deployed (Distt/Strength/Duration/In-Charge)": normalize(reserves_clean),
+        "Districts where force Deployed": districts_joined,
+        "Stay Arrangements/Bathroom (Quality)": normalize(stay),
+        "Messing Arrangements": normalize(mess),
+        "CO's Last Interaction with SP": normalize(co_interaction),
+        "Disciplinary Issues": search([r"discipline.*?:\s*(.*?)(?:\n|$)", r"indiscipline.*?:\s*(.*?)(?:\n|$)"], join=True),
+        "Reserves Detained": search([r"detained.*?:\s*(.*?)(?:\n|$)", r"beyond.*?without.*?:\s*(.*?)(?:\n|$)"]),
+        "Training": search([r"training.*?:\s*(.*?)(?:\n|$)", r"experience.*?:\s*(.*?)(?:\n|$)"], join=True),
+        "Welfare Initiative in Last 24 Hrs": search([r"welfare.*?:\s*(.*?)(?:\n|$)", r"CSR.*?:\s*(.*?)(?:\n|$)", r"initiative.*?:\s*(.*?)(?:\n|$)"], join=True),
+        "Reserves Available in Bn": search([r"available.*?:\s*(.*?)(?:\n|$)"], join=True),
+        "Issues for AP&T/PHQ": search([r"issue.*?(?:PHQ|AP&T).*?:\s*(.*?)(?:\n|$)", r"requires.*?attention.*?:\s*(.*?)(?:\n|$)"])
     }
 
 with st.form("input_form"):
@@ -95,7 +81,7 @@ with st.form("input_form"):
 
     if submitted:
         if input_text.strip():
-            entry = extract_fields_v4(input_text)
+            entry = extract_fields(input_text)
             st.session_state['report_data'].append(entry)
             st.success("✅ Report extracted and added.")
         else:
@@ -135,7 +121,7 @@ if st.session_state['report_data']:
             worksheet.set_column('A:A', 6)
             worksheet.set_column('B:B', 25)
             worksheet.set_column('C:C', 70)
-            worksheet.set_column('D:D', 25)
+            worksheet.set_column('D:D', 30)
             worksheet.set_column('E:E', 30)
             worksheet.set_column('F:F', 25)
             worksheet.set_column('G:G', 35)
