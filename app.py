@@ -4,15 +4,11 @@ import re
 from io import BytesIO
 from datetime import datetime
 import xlsxwriter
-import spacy
-import subprocess
-import importlib.util
+import nltk
+from nltk.tokenize import sent_tokenize
 
-try:
-    nlp = spacy.load("en_core_web_sm")
-except OSError:
-    subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"], check=True)
-    nlp = spacy.load("en_core_web_sm")
+nltk.download('punkt')
+
 st.set_page_config(page_title="IRBn ReportStream v3", layout="wide")
 st.title("📋 IRBn ReportStream v3 — Styled Excel Report")
 st.markdown("Paste one WhatsApp report at a time. Click **Extract & Add** to include it in today's structured report.")
@@ -30,15 +26,15 @@ def extract_reserves_clean(text):
     if not match:
         return "Nil"
 
-    doc = nlp(match.group(0))
-    sentences = []
-    for sent in doc.sents:
-        sent_text = sent.text.strip()
+    sentences = sent_tokenize(match.group(0))
+    cleaned = []
+    for sent in sentences:
+        sent_text = sent.strip()
         if any(kw in sent_text.lower() for kw in ["reserve", "incharge", "duration", "deployed", "duty", "strength", "official"]):
             clean = re.sub(r"^[\-*\d.\)\s]+", "", sent_text)
             if clean:
-                sentences.append(normalize(clean))
-    return "; ".join(sentences) if sentences else "Nil"
+                cleaned.append(normalize(clean))
+    return "; ".join(cleaned) if cleaned else "Nil"
 
 def extract_fields_v3_10(text):
     def find(patterns, join_lines=False, fallback="Nil"):
