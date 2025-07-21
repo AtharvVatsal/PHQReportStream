@@ -5,9 +5,14 @@ from io import BytesIO
 from datetime import datetime
 import xlsxwriter
 import spacy
+import subprocess
+import importlib.util
 
-nlp = spacy.load("en_core_web_sm")
-
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"], check=True)
+    nlp = spacy.load("en_core_web_sm")
 st.set_page_config(page_title="IRBn ReportStream v3", layout="wide")
 st.title("📋 IRBn ReportStream v3 — Styled Excel Report")
 st.markdown("Paste one WhatsApp report at a time. Click **Extract & Add** to include it in today's structured report.")
