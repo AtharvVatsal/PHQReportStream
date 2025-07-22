@@ -5,9 +5,6 @@ from io import BytesIO
 from datetime import datetime
 import xlsxwriter
 
-st.set_page_config(page_title="IRBn ReportStream v3", layout="wide")
-st.title("📋 IRBn ReportStream v3 — Styled Excel Report")
-st.markdown("Paste one WhatsApp report at a time. Click **Extract & Add** to include it in today's structured report.")
 # ==============================
 # OPTIONAL AI LAYER (DistilBERT)
 # ==============================
@@ -17,8 +14,6 @@ try:
 except Exception:
     TRANSFORMERS_AVAILABLE = False
 
-if 'report_data' not in st.session_state:
-    st.session_state['report_data'] = []
 # -------------------------------------------------
 # Streamlit config
 # -------------------------------------------------
@@ -26,10 +21,8 @@ st.set_page_config(page_title="IRBn ReportStream v3 (AI+Regex)", layout="wide")
 st.title("📋 IRBn ReportStream v3 — Styled Excel Report (Regex + DistilBERT)")
 st.markdown("Paste one WhatsApp report at a time (or multiple separated by a delimiter). Click **Extract & Add** to include it in today's structured report.")
 
-def normalize(val):
-    if not val or val.strip().lower() in ["none", "nil", "no", "no issue", "n/a", "not applicable", "-", ""]:
 # -------------------------------------------------
-# STRICT COLUMN ORDER (exact template wording)
+# Canonical columns (match template EXACTLY)
 # -------------------------------------------------
 COLUMNS = [
     "Name of IRBn/Bn",
@@ -67,29 +60,29 @@ DELIMITERS = ["\n---\n", "\n#####\n", "\n===\n"]
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
-def is_numeric_zero(val: str) -> bool:
+def is_numeric_zero(val) -> bool:
     try:
         return float(str(val).strip()) == 0.0
     except Exception:
         return False
 
-def normalize(val: str) -> str:
+def normalize(val) -> str:
     if val is None:
         return "Nil"
     v = str(val).strip()
-    if v == "":
+    if not v:
         return "Nil"
     if v.lower() in {"none", "nil", "no", "no issue", "n/a", "na", "not applicable", "-", "--", "nil."}:
         return "Nil"
     return v
 
-def choose_best(regex_val: str, ai_val: str) -> str:
+def choose_best(regex_val, ai_val):
     r = normalize(regex_val)
     a = normalize(ai_val)
     return r if r != "Nil" else a
 
 # -------------------------------------------------
-# STRICT TEMPLATE PARSER (preferred path)
+# STRICT template parser (1–11)
 # -------------------------------------------------
 SECTION_MAP = {
     "1": "Reserves Deployed (District / Strength / Duration / In-Charge)",
@@ -108,7 +101,7 @@ SECTION_MAP = {
 NAME_REGEX = re.compile(r"(?im)^\s*Name of IRBn/Bn\s*:\s*(.*)")
 SECTION_REGEX = re.compile(
     r"(?ms)^\s*(?P<num>\d{1,2})\.\s*(?P<label>[^:\n]+):\s*(?P<body>.*?)(?=^\s*\d{1,2}\.\s|\Z)",
-    re.MULTILINE | re.DOTALL
+    re.MULTILINE
 )
 
 def parse_standard_template(text: str) -> dict:
@@ -116,21 +109,19 @@ def parse_standard_template(text: str) -> dict:
     m = NAME_REGEX.search(text)
     if m:
         res["Name of IRBn/Bn"] = normalize(m.group(1))
-
     for sec in SECTION_REGEX.finditer(text):
         num = sec.group("num").strip()
         key = SECTION_MAP.get(num)
         if key:
             body = normalize(" ".join(sec.group("body").splitlines()).strip())
             res[key] = body
-
-    for k, v in res.items():
+    for k,v in res.items():
         if is_numeric_zero(v):
             res[k] = "0"
     return res
 
 # -------------------------------------------------
-# Legacy regex fallback (when format is messy)
+# Legacy regex fallback (kept short)
 # -------------------------------------------------
 def extract_section(text: str, start_labels, stop_labels=None) -> str:
     if stop_labels is None:
@@ -139,53 +130,15 @@ def extract_section(text: str, start_labels, stop_labels=None) -> str:
     m = re.search(start_pattern, text)
     if not m:
         return "Nil"
-    return val.strip()
-
-def extract_fields_v3_10(text):
-    def find(patterns, join_lines=False, fallback="Nil"):
-        for pat in patterns:
-            match = re.search(pat, text, re.IGNORECASE | re.DOTALL)
-            if match:
-                val = match.group(1).strip()
-                if join_lines:
-                    val = ' '.join(val.splitlines()).strip()
-                return normalize(val)
-        return fallback
-
-    name_of_battalion = find([
-        r"Bn\s*[:\-]\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
-        r"^\s*(\d+.*?(?:IRBn|HPAP).*?)\n",
-        r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n"
-    ])
-
-    reserves_block = re.search(r"(?i)1\..*?Reserves.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
-    reserves_clean = "Nil"
-    if reserves_block:
-        lines = reserves_block.group(0).splitlines()
-        cleaned = []
-        for line in lines:
-            if any(keyword in line.lower() for keyword in ["reserve", "duration", "incharge", "official", "strength"]):
-                cleaned.append(line.strip("-* "))
-        reserves_clean = "; ".join([normalize(e) for e in cleaned if len(e) > 2])
-
-    districts = re.findall(r"(?i)(?:(?:district|distt)\.?|district of)\s*([A-Z][a-z]+)", text)
-    ps_pp_matches = re.findall(r"(?i)(?:PS|PP)\s+([A-Z][a-z]+)", text)
-    all_districts = sorted(set(districts + ps_pp_matches)) if (districts or ps_pp_matches) else ["Nil"]
-
-    return {
-        "Name of IRBn/Bn": name_of_battalion,
-        "Reserves Deployed (Distt/Strength/Duration/In-Charge)": reserves_clean,
     remainder = text[m.end():]
-
     stops = [r"(?m)^\d+\.\s", r"(?m)^\*\s", r"(?m)^-\s"]
     if stop_labels:
         stops.append(r"(?im)^(?:" + "|".join([re.escape(s) for s in stop_labels]) + r")[\s:.-]*")
-
     stop_pos = None
     for sr in stops:
-        sm = re.search(sr, remainder)
-        if sm:
-            pos = sm.start()
+        mm = re.search(sr, remainder)
+        if mm:
+            pos = mm.start()
             if stop_pos is None or pos < stop_pos:
                 stop_pos = pos
     block = remainder[:stop_pos] if stop_pos is not None else remainder
@@ -211,122 +164,65 @@ def extract_regex_fields(raw: str) -> dict:
     ], text)
 
     reserves = extract_section(text,
-        start_labels=["1. Reserves", "1. Reserves Deployed", "Reserves Deployed"],
-        stop_labels=["2.", "Stay arrangements", "Stay Arrangement", "Disciplinary", "Training"]
+        ["1. Reserves", "1. Reserves Deployed", "Reserves Deployed"],
+        ["2.", "Stay", "Disciplinary", "Training"]
     )
 
     districts = re.findall(r"(?i)(?:dist(?:rict)?|distt)\s*[:\-]?\s*([A-Za-z &/()-]+)", text)
     ps_pp = re.findall(r"(?i)(?:PS|PP)\s*[:\-]?\s*([A-Za-z &/()-]+)", text)
     def split_clean(lst):
-        out = []
+        out=[]
         for item in lst:
             for p in re.split(r"[,/;]", item):
-                p = p.strip()
-                if p and p.lower() != 'nil' and len(p) > 1:
+                p=p.strip()
+                if p and p.lower()!="nil" and len(p)>1:
                     out.append(p)
         return out
-    all_districts = sorted(set(split_clean(districts + ps_pp))) or ["Nil"]
+    all_districts = sorted(set(split_clean(districts+ps_pp))) or ["Nil"]
 
-    stay = extract_section(text,
-        start_labels=["Stay arrangements", "Stay Arrangement", "Stay"],
-        stop_labels=["Mess", "Messing", "Disciplinary", "Training"]
-    )
-
-    messing = extract_section(text,
-        start_labels=["Messing arrangements", "Mess arrangements", "Mess"],
-        stop_labels=["CO's last Interaction", "Interaction", "Disciplinary", "Training"]
-    )
-
+    stay = extract_section(text, ["Stay arrangements", "Stay Arrangement", "Stay"],
+                           ["Mess", "Disciplinary", "Training"])
+    messing = extract_section(text, ["Messing arrangements", "Mess arrangements", "Mess"],
+                              ["Interaction", "Disciplinary", "Training"])
     interaction = find_first([
         r"(?:interaction|spoke|talked|visited).*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+        r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
     ], text, join_lines=True)
-
-    disciplinary = extract_section(text,
-        start_labels=["Disciplinary Issues", "Disciplinary issue", "Indiscipline"],
-        stop_labels=["Reserves Detained", "Training", "Welfare", "Issue for AP&T"]
-    )
-
+    disciplinary = extract_section(text, ["Disciplinary Issues", "Disciplinary issue", "Indiscipline"],
+                                   ["Reserves Detained", "Training", "Welfare", "Issue"])
     detained = find_first([
         r"Reserves\s*detained\s*[:\-]\s*(.*?)(?:\n|$)",
         r"detained.*?:\s*(.*?)(?:\n|$)",
         r"beyond duty.*?:\s*(.*?)(?:\n|$)"
     ], text)
-
-    training = extract_section(text,
-        start_labels=["Training", "Experience sharing"],
-        stop_labels=["Welfare", "Reserves Available", "Issue for AP&T"]
-    )
-
-    welfare = extract_section(text,
-        start_labels=["Welfare", "CSR", "Initiative"],
-        stop_labels=["Reserves Available", "Issue for AP&T"]
-    )
-
+    training = extract_section(text, ["Training", "Experience sharing"],
+                               ["Welfare", "Reserves Available", "Issue"])
+    welfare = extract_section(text, ["Welfare", "CSR", "Initiative"],
+                              ["Reserves Available", "Issue"])
     reserves_available = find_first([
         r"Reserves.*?available.*?:\s*(.*?)(?:\n|$)",
         r"available.*?:\s*(.*?)(?:\n|$)"
     ], text)
-
     issue_phq = extract_section(text,
-        start_labels=["Issue for AP&T / PHQ", "Issue for AP&T/PHQ", "Issue for AP&T", "Issues for PHQ", "Issue for PHQ"],
-        stop_labels=[]
+        ["Issue for AP&T / PHQ", "Issue for AP&T/PHQ", "Issue for AP&T", "Issues for PHQ", "Issue for PHQ"],
+        []
     )
 
     out = {
-        "Name of IRBn/Bn": name,
-        "Reserves Deployed (District / Strength / Duration / In-Charge)": reserves,
-        "Districts where force deployed": ", ".join(all_districts),
-        "Stay Arrangement/Bathrooms (Quality)": find([
-            r"Stay arrangements.*?:\s*(.*?)(?:\n\s*\d|\n\*|\n3|\n4|\n$)",
-            r"bathrooms.*?:\s*(.*?)\n"
-        ], join_lines=True),
-        "Messing Arrangements": find([
-            r"Messing arrangements.*?:\s*(.*?)\n",
-            r"Mess arrangements.*?:\s*(.*?)\n",
-            r"food.*?(?:arranged|available).*?([^.\n]*)"
-        ], join_lines=True),
-        "CO's last Interaction with SP": find([
-            r"(?:spoke.*?SP.*?|visited.*?)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
-            r"interaction.*?on\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
-            r"(?:spoke|talked).*?SP.*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
-        ], join_lines=True),
-        "Disciplinary Issues": find([
-            r"disciplinary issue.*?:\s*(.*?)\n",
-            r"indiscipline.*?:\s*(.*?)\n"
-        ], join_lines=True),
-        "Reserves Detained": find([
-            r"detained.*?:\s*(.*?)\n",
-            r"beyond duty.*?:\s*(.*?)\n",
-            r"Reserves detained.*?(\d+.*?)\n"
-        ]),
-        "Training": find([
-            r"Training.*?:\s*(.*?)(?:\n|$)",
-            r"experience sharing.*?\n(.*?)\n"
-        ], join_lines=True),
-        "Welfare Initiative in Last 24 Hrs": find([
-            r"welfare.*?:\s*(.*?)\n",
-            r"CSR.*?:\s*(.*?)\n",
-            r"initiative.*?:\s*(.*?)\n"
-        ], join_lines=True),
-        "Reserves Available in Bn": find([
-            r"Reserves.*?available.*?:\s*(.*?)\n",
-            r"available.*?:\s*(.*?)\n"
-        ]),
-        "Issue for AP&T/PHQ": find([
-            r"issue.*?PHQ.*?:\s*(.*?)\n",
-            r"requires.*?attention.*?:\s*(.*?)\n"
-        ])
-        "Stay Arrangement / Bathrooms (Quality)": stay,
-        "Messing Arrangements": messing,
-        "CO's last Interaction with SP": interaction,
-        "Disciplinary Issues": disciplinary,
-        "Reserves Detained": detained,
-        "Training": training,
-        "Welfare Initiative in Last 24 Hrs": welfare,
-        "Reserves Available in Bn": reserves_available,
-        "Issue for AP&T / PHQ": issue_phq
+        COLUMNS[0]: name,
+        COLUMNS[1]: reserves,
+        COLUMNS[2]: ", ".join(all_districts),
+        COLUMNS[3]: stay,
+        COLUMNS[4]: messing,
+        COLUMNS[5]: interaction,
+        COLUMNS[6]: disciplinary,
+        COLUMNS[7]: detained,
+        COLUMNS[8]: training,
+        COLUMNS[9]: welfare,
+        COLUMNS[10]: reserves_available,
+        COLUMNS[11]: issue_phq
     }
-    for k, v in out.items():
+    for k,v in out.items():
         if is_numeric_zero(v):
             out[k] = "0"
     return out
@@ -335,18 +231,18 @@ def extract_regex_fields(raw: str) -> dict:
 # AI Extraction (QA)
 # -------------------------------------------------
 AI_QUESTIONS = {
-    "Name of IRBn/Bn": "What is the name of the battalion or IRBn?",
-    "Reserves Deployed (District / Strength / Duration / In-Charge)": "Describe the reserves deployed including district, strength, duration and in-charge?",
-    "Districts where force deployed": "List the districts where the force is deployed?",
-    "Stay Arrangement / Bathrooms (Quality)": "Describe the stay arrangement and bathroom quality?",
-    "Messing Arrangements": "Describe the messing or food arrangements?",
-    "CO's last Interaction with SP": "When did the CO last interact with the SP? Give the date.",
-    "Disciplinary Issues": "Mention any disciplinary issues?",
-    "Reserves Detained": "Were any reserves detained or held beyond duty? State details.",
-    "Training": "Was there any training or experience sharing? Describe.",
-    "Welfare Initiative in Last 24 Hrs": "What welfare initiatives were taken in the last 24 hours?",
-    "Reserves Available in Bn": "How many reserves are available in the battalion?",
-    "Issue for AP&T / PHQ": "List issues for AP&T or PHQ."
+    COLUMNS[0]:  "What is the name of the battalion or IRBn?",
+    COLUMNS[1]:  "Describe the reserves deployed including district, strength, duration and in-charge?",
+    COLUMNS[2]:  "List the districts where the force is deployed?",
+    COLUMNS[3]:  "Describe the stay arrangement and bathroom quality?",
+    COLUMNS[4]:  "Describe the messing or food arrangements?",
+    COLUMNS[5]:  "When did the CO last interact with the SP? Give the date.",
+    COLUMNS[6]:  "Mention any disciplinary issues?",
+    COLUMNS[7]:  "Were any reserves detained or held beyond duty? State details.",
+    COLUMNS[8]:  "Was there any training or experience sharing? Describe.",
+    COLUMNS[9]:  "What welfare initiatives were taken in the last 24 hours?",
+    COLUMNS[10]: "How many reserves are available in the battalion?",
+    COLUMNS[11]: "List issues for AP&T or PHQ."
 }
 
 @st.cache_resource(show_spinner=False)
@@ -382,14 +278,14 @@ def styled_excel(df: pd.DataFrame) -> BytesIO:
     title = f"Consolidated Daily Status Report of All IRBn/Bns as on {today_str}"
 
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        workbook = writer.book
-        ws = workbook.add_worksheet("IRBn Report")
+        wb = writer.book
+        ws = wb.add_worksheet("IRBn Report")
         writer.sheets["IRBn Report"] = ws
 
-        title_fmt  = workbook.add_format({'bold': True, 'font_size': 14, 'align': 'center', 'valign': 'vcenter'})
-        header_fmt = workbook.add_format({'bold': True, 'bg_color': '#D9D9D9', 'border': 1, 'text_wrap': True,
-                                          'align': 'center', 'valign': 'vcenter'})
-        cell_fmt   = workbook.add_format({'border': 1, 'text_wrap': True, 'valign': 'top'})
+        title_fmt  = wb.add_format({'bold': True, 'font_size': 14, 'align': 'center', 'valign': 'vcenter'})
+        header_fmt = wb.add_format({'bold': True, 'bg_color': '#D9D9D9', 'border': 1, 'text_wrap': True,
+                                    'align': 'center', 'valign': 'vcenter'})
+        cell_fmt   = wb.add_format({'border': 1, 'text_wrap': True, 'valign': 'top'})
 
         headers = ["S. No"] + list(df.columns)
         last_col = xlsxwriter.utility.xl_col_to_name(len(headers) - 1)
@@ -439,9 +335,6 @@ with st.form("input_form"):
 
     if submitted:
         if input_text.strip():
-            entry = extract_fields_v3_10(input_text)
-            st.session_state['report_data'].append(entry)
-            st.success("✅ Report extracted and added.")
             texts = [input_text]
             if batch_mode:
                 for delim in DELIMITERS:
@@ -451,9 +344,10 @@ with st.form("input_form"):
 
             added = 0
             for t in texts:
+                # 1. Strict parser
                 row = parse_standard_template(t)
-                # if template not followed (all Nil except name), fallback to regex + AI
                 if all(row.get(col, "Nil") == "Nil" for col in COLUMNS[1:]):
+                    # fallback: regex + AI
                     regex_out = extract_regex_fields(t)
                     ai_out = ai_extract_fields(t, qa_pipe)
                     row = {col: choose_best(regex_out.get(col, "Nil"), ai_out.get(col, "Nil")) for col in COLUMNS}
@@ -464,60 +358,19 @@ with st.form("input_form"):
         else:
             st.warning("⚠️ Please paste a report before submitting.")
 
-if st.session_state['report_data']:
 # -------------------------------------------------
 # Display & Download
 # -------------------------------------------------
 if st.session_state["report_data"]:
     st.markdown("### 📄 Today's Reports (Live View)")
-    df = pd.DataFrame(st.session_state['report_data'])
     df = pd.DataFrame(st.session_state["report_data"], columns=COLUMNS)
     df.index = df.index + 1
-
     st.dataframe(df, use_container_width=True)
 
-    def styled_excel(df):
-        output = BytesIO()
-        today_str = datetime.today().strftime("%d/%m/%Y")
-        title = f"Consolidated Daily Status Report of All IRBn/Bns as on {today_str}"
-
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            workbook = writer.book
-            worksheet = workbook.add_worksheet("IRBn Report")
-            writer.sheets["IRBn Report"] = worksheet
-
-            title_format = workbook.add_format({'bold': True, 'font_size': 14})
-            header_format = workbook.add_format({'bold': True, 'bg_color': '#D9D9D9', 'border': 1})
-            cell_format = workbook.add_format({'border': 1, 'text_wrap': True, 'valign': 'top'})
-
-            worksheet.merge_range('A1:M1', title, title_format)
-
-            headers = ["S. No"] + list(df.columns)
-            worksheet.write_row('A3', headers, header_format)
-
-            for row_num, row_data in enumerate(df.itertuples(), start=3):
-                worksheet.write(row_num, 0, row_num - 2, cell_format)
-                for col_num, val in enumerate(row_data[1:], start=1):
-                    worksheet.write(row_num, col_num, val, cell_format)
-
-            worksheet.set_column('A:A', 6)
-            worksheet.set_column('B:B', 25)
-            worksheet.set_column('C:C', 70)
-            worksheet.set_column('D:D', 25)
-            worksheet.set_column('E:E', 30)
-            worksheet.set_column('F:F', 25)
-            worksheet.set_column('G:G', 35)
-            worksheet.set_column('H:M', 25)
-
-        output.seek(0)
-        return output
-
-    st.download_button("📅 Download Styled Excel Report", data=styled_excel(df), file_name="IRBn_Consolidated_Report.xlsx")
     xls_bytes = styled_excel(df)
     st.download_button("📅 Download Styled Excel Report", data=xls_bytes, file_name="IRBn_Consolidated_Report.xlsx")
 
     if st.button("🔁 Reset Table for New Day"):
-        st.session_state['report_data'] = []
         st.session_state["report_data"] = []
         st.success("✅ Table reset for a new report cycle.")
 else:
