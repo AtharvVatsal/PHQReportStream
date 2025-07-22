@@ -17,12 +17,12 @@ except Exception:
 # -------------------------------------------------
 # Streamlit config
 # -------------------------------------------------
-st.set_page_config(page_title="IRBn ReportStream v3 (AI+Regex)", layout="wide")
-st.title("📋 IRBn ReportStream v3 — Styled Excel Report (Regex + DistilBERT)")
-st.markdown("Paste one WhatsApp report at a time (or multiple separated by a delimiter). Click **Extract & Add** to include it in today's structured report.")
+st.set_page_config(page_title="IRBn ReportStream v3 FINAL", layout="wide")
+st.title("📋 IRBn ReportStream v3 — FINAL (Strict Template + Smart Fallback + AI)")
+st.caption("Build date: 22-Jul-2025")
 
 # -------------------------------------------------
-# Canonical columns (match template EXACTLY)
+# Canonical column order (exact wording)
 # -------------------------------------------------
 COLUMNS = [
     "Name of IRBn/Bn",
@@ -36,45 +36,49 @@ COLUMNS = [
     "Training",
     "Welfare Initiative in Last 24 Hrs",
     "Reserves Available in Bn",
-    "Issue for AP&T / PHQ"
+    "Issue for AP&T / PHQ",
 ]
 
 COLUMN_WIDTHS = {
     "S. No": 6,
-    "Name of IRBn/Bn": 25,
-    "Reserves Deployed (District / Strength / Duration / In-Charge)": 70,
-    "Districts where force deployed": 25,
-    "Stay Arrangement / Bathrooms (Quality)": 30,
-    "Messing Arrangements": 25,
-    "CO's last Interaction with SP": 35,
-    "Disciplinary Issues": 25,
-    "Reserves Detained": 25,
-    "Training": 25,
-    "Welfare Initiative in Last 24 Hrs": 30,
-    "Reserves Available in Bn": 25,
-    "Issue for AP&T / PHQ": 25,
+    "Name of IRBn/Bn": 28,
+    "Reserves Deployed (District / Strength / Duration / In-Charge)": 72,
+    "Districts where force deployed": 28,
+    "Stay Arrangement / Bathrooms (Quality)": 32,
+    "Messing Arrangements": 28,
+    "CO's last Interaction with SP": 36,
+    "Disciplinary Issues": 26,
+    "Reserves Detained": 26,
+    "Training": 26,
+    "Welfare Initiative in Last 24 Hrs": 32,
+    "Reserves Available in Bn": 28,
+    "Issue for AP&T / PHQ": 28,
 }
 
+# If multiple reports are pasted together, split on these
 DELIMITERS = ["\n---\n", "\n#####\n", "\n===\n"]
 
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
-def is_numeric_zero(val) -> bool:
+
+def is_zero(val):
     try:
         return float(str(val).strip()) == 0.0
     except Exception:
         return False
 
-def normalize(val) -> str:
+
+def normalize(val):
     if val is None:
         return "Nil"
     v = str(val).strip()
     if not v:
         return "Nil"
-    if v.lower() in {"none", "nil", "no", "no issue", "n/a", "na", "not applicable", "-", "--", "nil."}:
+    if v.lower() in {"nil", "none", "no", "no issue", "n/a", "na", "not applicable", "--", "-"}:
         return "Nil"
     return v
+
 
 def choose_best(regex_val, ai_val):
     r = normalize(regex_val)
@@ -82,9 +86,9 @@ def choose_best(regex_val, ai_val):
     return r if r != "Nil" else a
 
 # -------------------------------------------------
-# STRICT template parser (1–11)
+# 1) STRICT parser (messages that follow the exact numbered template)
 # -------------------------------------------------
-SECTION_MAP = {
+SECTION_MAP_STRICT = {
     "1": "Reserves Deployed (District / Strength / Duration / In-Charge)",
     "2": "Districts where force deployed",
     "3": "Stay Arrangement / Bathrooms (Quality)",
@@ -98,31 +102,130 @@ SECTION_MAP = {
     "11": "Issue for AP&T / PHQ",
 }
 
-NAME_REGEX = re.compile(r"(?im)^\s*Name of IRBn/Bn\s*:\s*(.*)")
-SECTION_REGEX = re.compile(
+NAME_PATTERNS = [
+    r"^\s*Name of IRBn/Bn\s*:\s*<?([^>\n]+)>?",
+    r"^\s*Name of Bn\s*:\s*<?([^>\n]+)>?",
+    r"^\s*Bn\s*No\.?\s*and\s*Location\s*:\s*(.*)",
+]
+
+STRICT_SECTION_RE = re.compile(
     r"(?ms)^\s*(?P<num>\d{1,2})\.\s*(?P<label>[^:\n]+):\s*(?P<body>.*?)(?=^\s*\d{1,2}\.\s|\Z)",
     re.MULTILINE
 )
 
-def parse_standard_template(text: str) -> dict:
-    res = {c: "Nil" for c in COLUMNS}
-    m = NAME_REGEX.search(text)
-    if m:
-        res["Name of IRBn/Bn"] = normalize(m.group(1))
-    for sec in SECTION_REGEX.finditer(text):
-        num = sec.group("num").strip()
-        key = SECTION_MAP.get(num)
+
+def parse_strict(text: str) -> dict:
+    out = {c: "Nil" for c in COLUMNS}
+    # Name
+    for pat in NAME_PATTERNS:
+        m = re.search(pat, text, flags=re.IGNORECASE | re.MULTILINE)
+        if m:
+            out["Name of IRBn/Bn"] = normalize(m.group(1))
+            break
+    # Sections
+    for m in STRICT_SECTION_RE.finditer(text):
+        num = m.group("num").strip()
+        body = normalize(" ".join(m.group("body").splitlines()))
+        key = SECTION_MAP_STRICT.get(num)
         if key:
-            body = normalize(" ".join(sec.group("body").splitlines()).strip())
-            res[key] = body
-    for k,v in res.items():
-        if is_numeric_zero(v):
-            res[k] = "0"
-    return res
+            out[key] = body
+    for k, v in out.items():
+        if is_zero(v):
+            out[k] = "0"
+    return out
 
 # -------------------------------------------------
-# Legacy regex fallback (kept short)
+# 2) SMART fuzzy parser (when numbers/labels are shuffled)
 # -------------------------------------------------
+# Keyword lists for fuzzy label → field mapping
+FIELD_KEYWORDS = {
+    "Reserves Deployed (District / Strength / Duration / In-Charge)": ["reserve", "deployed", "strength", "duration", "in-charge", "detail of bn reserves"],
+    "Districts where force deployed": ["districts where force deployed", "district-wise", "distt", "district"],
+    "Stay Arrangement / Bathrooms (Quality)": ["stay", "bathroom", "bathrooms", "quality"],
+    "Messing Arrangements": ["messing", "mess facility", "mess"],
+    "CO's last Interaction with SP": ["last spoke", "interaction", "spoke to", "personally last", "date on which co"],
+    "Disciplinary Issues": ["disciplinary", "indiscipline"],
+    "Reserves Detained": ["detained", "beyond duty"],
+    "Training": ["training", "course", "undergoing"],
+    "Welfare Initiative in Last 24 Hrs": ["welfare", "csr", "initiative"],
+    "Reserves Available in Bn": ["available in the bn", "reserves (with strength) available", "reserves available"],
+    "Issue for AP&T / PHQ": ["issue", "ap&t", "phq"],
+}
+
+# A generic numbered/bulleted section regex
+GENERIC_SECTION_RE = re.compile(
+    r"(?ms)^\s*(\d{1,2})\.\s*([^:\n]+):\s*(.*?)(?=^\s*\d{1,2}\.\s|\Z)",
+    re.MULTILINE
+)
+
+
+def fuzzy_label_to_field(label: str) -> str | None:
+    lab = label.lower()
+    best_field = None
+    best_hits = 0
+    for field, keys in FIELD_KEYWORDS.items():
+        hits = sum(1 for k in keys if k in lab)
+        if hits > best_hits:
+            best_hits = hits
+            best_field = field
+    # Require at least 1 keyword match
+    return best_field if best_hits else None
+
+
+def derive_districts(full_text: str) -> str:
+    # Try explicit section first
+    m = re.search(r"(?im)^\s*2\.\s*Districts where force deployed\s*:\s*(.*)$", full_text)
+    if m:
+        return normalize(m.group(1))
+    # Else: scrape from anywhere: "Distt/District X" OR lines like "Shimla:" at start
+    dists = set()
+    for d in re.findall(r"(?:Distt\.?|District)\s*([A-Za-z][A-Za-z &/-]+)", full_text, flags=re.IGNORECASE):
+        dists.add(d.strip())
+    for d in re.findall(r"^\s*([A-Z][A-Za-z &/-]+)\s*:\s*\d", full_text, flags=re.MULTILINE):
+        # common pattern "Shimla: 25..."
+        dists.add(d.strip())
+    return ", ".join(sorted(dists)) if dists else "Nil"
+
+
+def parse_smart(text: str) -> dict:
+    out = {c: "Nil" for c in COLUMNS}
+    # Name
+    for pat in NAME_PATTERNS:
+        m = re.search(pat, text, flags=re.IGNORECASE | re.MULTILINE)
+        if m:
+            out["Name of IRBn/Bn"] = normalize(m.group(1))
+            break
+    # Numbered sections, fuzzy match labels
+    for num, label, body in GENERIC_SECTION_RE.findall(text):
+        field = fuzzy_label_to_field(label)
+        if field:
+            val = normalize(" ".join(body.splitlines()))
+            out[field] = val
+    # If districts still Nil, derive heuristically
+    if out["Districts where force deployed"] == "Nil":
+        out["Districts where force deployed"] = derive_districts(text)
+    for k, v in out.items():
+        if is_zero(v):
+            out[k] = "0"
+    return out
+
+# -------------------------------------------------
+# 3) Legacy regex fallback from old script (for safety)
+# -------------------------------------------------
+
+# Reuse pieces of the old code for ultimate fallback
+OLD_SECTION_STARTS = {
+    "reserves": ["1. Reserves", "1. Reserves Deployed", "1. Detail of Bn Reserves", "1. Details of Bn Reserves", "1. Details of Bn Reserves Deployed"],
+    "stay": ["3. Stay", "2. Stay", "Stay arrangements", "Stay Arrangement"],
+    "mess": ["4. Messing", "3. Messing", "Messing arrangements", "Mess arrangements"],
+    "disciplinary": ["6. Disciplinary", "5. Any disciplinary"],
+    "detained": ["7. Reserves Detained", "6. Reserves detained"],
+    "training": ["8. Training", "7. Training"],
+    "welfare": ["9. Welfare", "8. Any Initiative of welfare"],
+    "issue": ["11. Issue", "10. Any other issue"],
+}
+
+
 def extract_section(text: str, start_labels, stop_labels=None) -> str:
     if stop_labels is None:
         stop_labels = []
@@ -130,123 +233,74 @@ def extract_section(text: str, start_labels, stop_labels=None) -> str:
     m = re.search(start_pattern, text)
     if not m:
         return "Nil"
-    remainder = text[m.end():]
+    rem = text[m.end():]
+    # generic stops
     stops = [r"(?m)^\d+\.\s", r"(?m)^\*\s", r"(?m)^-\s"]
     if stop_labels:
         stops.append(r"(?im)^(?:" + "|".join([re.escape(s) for s in stop_labels]) + r")[\s:.-]*")
     stop_pos = None
     for sr in stops:
-        mm = re.search(sr, remainder)
+        mm = re.search(sr, rem)
         if mm:
             pos = mm.start()
             if stop_pos is None or pos < stop_pos:
                 stop_pos = pos
-    block = remainder[:stop_pos] if stop_pos is not None else remainder
-    return normalize(" ".join(block.splitlines()).strip())
+    block = rem[:stop_pos] if stop_pos is not None else rem
+    return normalize(" ".join(block.splitlines()))
 
-def find_first(patterns, text, join_lines=False, fallback="Nil"):
-    for pat in patterns:
-        m = re.search(pat, text, flags=re.IGNORECASE | re.DOTALL)
-        if m:
-            val = m.group(1).strip()
-            if join_lines:
-                val = " ".join(val.splitlines()).strip()
-            return normalize(val)
-    return fallback
 
-def extract_regex_fields(raw: str) -> dict:
-    text = raw.replace("\r", "")
-    name = find_first([
-        r"Name of IRBn/Bn\s*:\s*(.*)",
-        r"Bn\s*[:\-]\s*(\d+.*?(?:IRBn|HPAP).*?)(?:\n|$)",
-        r"^\s*(\d+.*?(?:IRBn|HPAP).*?)(?:\n|$)",
-        r"Bn\s+No\.?\s*and\s*Location\s*[:\-]\s*(.*?)(?:\n|$)"
-    ], text)
-
-    reserves = extract_section(text,
-        ["1. Reserves", "1. Reserves Deployed", "Reserves Deployed"],
-        ["2.", "Stay", "Disciplinary", "Training"]
-    )
-
-    districts = re.findall(r"(?i)(?:dist(?:rict)?|distt)\s*[:\-]?\s*([A-Za-z &/()-]+)", text)
-    ps_pp = re.findall(r"(?i)(?:PS|PP)\s*[:\-]?\s*([A-Za-z &/()-]+)", text)
-    def split_clean(lst):
-        out=[]
-        for item in lst:
-            for p in re.split(r"[,/;]", item):
-                p=p.strip()
-                if p and p.lower()!="nil" and len(p)>1:
-                    out.append(p)
-        return out
-    all_districts = sorted(set(split_clean(districts+ps_pp))) or ["Nil"]
-
-    stay = extract_section(text, ["Stay arrangements", "Stay Arrangement", "Stay"],
-                           ["Mess", "Disciplinary", "Training"])
-    messing = extract_section(text, ["Messing arrangements", "Mess arrangements", "Mess"],
-                              ["Interaction", "Disciplinary", "Training"])
-    interaction = find_first([
-        r"(?:interaction|spoke|talked|visited).*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
-        r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
-    ], text, join_lines=True)
-    disciplinary = extract_section(text, ["Disciplinary Issues", "Disciplinary issue", "Indiscipline"],
-                                   ["Reserves Detained", "Training", "Welfare", "Issue"])
-    detained = find_first([
-        r"Reserves\s*detained\s*[:\-]\s*(.*?)(?:\n|$)",
-        r"detained.*?:\s*(.*?)(?:\n|$)",
-        r"beyond duty.*?:\s*(.*?)(?:\n|$)"
-    ], text)
-    training = extract_section(text, ["Training", "Experience sharing"],
-                               ["Welfare", "Reserves Available", "Issue"])
-    welfare = extract_section(text, ["Welfare", "CSR", "Initiative"],
-                              ["Reserves Available", "Issue"])
-    reserves_available = find_first([
-        r"Reserves.*?available.*?:\s*(.*?)(?:\n|$)",
-        r"available.*?:\s*(.*?)(?:\n|$)"
-    ], text)
-    issue_phq = extract_section(text,
-        ["Issue for AP&T / PHQ", "Issue for AP&T/PHQ", "Issue for AP&T", "Issues for PHQ", "Issue for PHQ"],
-        []
-    )
-
+def extract_legacy(text: str) -> dict:
+    name = normalize(next((re.search(p, text, flags=re.I|re.M).group(1) for p in NAME_PATTERNS if re.search(p, text, flags=re.I|re.M)), "Nil"))
+    reserves = extract_section(text, OLD_SECTION_STARTS["reserves"], ["2.", "Stay", "Disciplinary", "Training"])
+    districts = derive_districts(text)
+    stay = extract_section(text, OLD_SECTION_STARTS["stay"], ["Mess", "Disciplinary", "Training"])
+    mess = extract_section(text, OLD_SECTION_STARTS["mess"], ["Interaction", "Disciplinary", "Training"])
+    interaction = normalize(next((m.group(1) for m in [re.search(r"(?:interaction|spoke).*?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})", text, flags=re.I|re.S)] if m), "Nil"))
+    disciplinary = extract_section(text, OLD_SECTION_STARTS["disciplinary"], ["Reserves Detained", "Training", "Welfare", "Issue"])
+    detained = extract_section(text, OLD_SECTION_STARTS["detained"], ["Training", "Welfare", "Issue"])
+    training = extract_section(text, OLD_SECTION_STARTS["training"], ["Welfare", "Issue"])
+    welfare = extract_section(text, OLD_SECTION_STARTS["welfare"], ["Issue"])
+    available = normalize(next((m.group(1) for m in [re.search(r"10\..*?:\s*(.*)", text, flags=re.I|re.S)] if m), "Nil"))
+    issue = extract_section(text, OLD_SECTION_STARTS["issue"], [])
     out = {
         COLUMNS[0]: name,
         COLUMNS[1]: reserves,
-        COLUMNS[2]: ", ".join(all_districts),
+        COLUMNS[2]: districts,
         COLUMNS[3]: stay,
-        COLUMNS[4]: messing,
+        COLUMNS[4]: mess,
         COLUMNS[5]: interaction,
         COLUMNS[6]: disciplinary,
         COLUMNS[7]: detained,
         COLUMNS[8]: training,
         COLUMNS[9]: welfare,
-        COLUMNS[10]: reserves_available,
-        COLUMNS[11]: issue_phq
+        COLUMNS[10]: available,
+        COLUMNS[11]: issue,
     }
-    for k,v in out.items():
-        if is_numeric_zero(v):
+    for k, v in out.items():
+        if is_zero(v):
             out[k] = "0"
     return out
 
 # -------------------------------------------------
-# AI Extraction (QA)
+# 4) AI QA layer (always-on but silent if model missing)
 # -------------------------------------------------
 AI_QUESTIONS = {
-    COLUMNS[0]:  "What is the name of the battalion or IRBn?",
-    COLUMNS[1]:  "Describe the reserves deployed including district, strength, duration and in-charge?",
-    COLUMNS[2]:  "List the districts where the force is deployed?",
-    COLUMNS[3]:  "Describe the stay arrangement and bathroom quality?",
-    COLUMNS[4]:  "Describe the messing or food arrangements?",
-    COLUMNS[5]:  "When did the CO last interact with the SP? Give the date.",
-    COLUMNS[6]:  "Mention any disciplinary issues?",
-    COLUMNS[7]:  "Were any reserves detained or held beyond duty? State details.",
-    COLUMNS[8]:  "Was there any training or experience sharing? Describe.",
-    COLUMNS[9]:  "What welfare initiatives were taken in the last 24 hours?",
+    COLUMNS[0]: "What is the name of the battalion or IRBn?",
+    COLUMNS[1]: "Describe the reserves deployed including district, strength, duration and in-charge?",
+    COLUMNS[2]: "List the districts where the force is deployed?",
+    COLUMNS[3]: "Describe the stay arrangement and bathroom quality?",
+    COLUMNS[4]: "Describe the messing or food arrangements?",
+    COLUMNS[5]: "When did the CO last interact with the SP? Give the date.",
+    COLUMNS[6]: "Mention any disciplinary issues?",
+    COLUMNS[7]: "Were any reserves detained or held beyond duty? State details.",
+    COLUMNS[8]: "Was there any training or experience sharing? Describe.",
+    COLUMNS[9]: "What welfare initiatives were taken in the last 24 hours?",
     COLUMNS[10]: "How many reserves are available in the battalion?",
-    COLUMNS[11]: "List issues for AP&T or PHQ."
+    COLUMNS[11]: "List issues for AP&T or PHQ.",
 }
 
 @st.cache_resource(show_spinner=False)
-def load_qa_pipeline():
+def load_qa():
     if not TRANSFORMERS_AVAILABLE:
         return None
     try:
@@ -256,28 +310,56 @@ def load_qa_pipeline():
     except Exception:
         return None
 
-def ai_extract_fields(raw_text: str, qa_pipe) -> dict:
+
+def ai_extract(text: str, qa_pipe):
     if qa_pipe is None:
         return {k: "Nil" for k in COLUMNS}
     out = {}
     for field, q in AI_QUESTIONS.items():
         try:
-            res = qa_pipe({"question": q, "context": raw_text})
-            ans = res.get("answer", "").strip()
+            r = qa_pipe({"question": q, "context": text})
+            ans = r.get("answer", "").strip()
         except Exception:
             ans = "Nil"
-        out[field] = ans if ans else "Nil"
+        out[field] = normalize(ans) if ans else "Nil"
     return out
+
+# -------------------------------------------------
+# 5) Master extractor
+# -------------------------------------------------
+
+def extract_fields(text: str, qa_pipe=None) -> dict:
+    # 1. Strict
+    strict = parse_strict(text)
+    # Count how many fields filled (excluding name)
+    filled = sum(1 for k, v in strict.items() if k != COLUMNS[0] and v != "Nil")
+    if filled >= 6:  # good enough
+        base = strict
+    else:
+        # 2. Smart fuzzy
+        smart = parse_smart(text)
+        filled2 = sum(1 for k, v in smart.items() if k != COLUMNS[0] and v != "Nil")
+        if filled2 >= filled:
+            base = smart
+        else:
+            # 3. Legacy
+            base = extract_legacy(text)
+
+    # AI overlay
+    ai_out = ai_extract(text, qa_pipe)
+    final = {col: choose_best(base.get(col, "Nil"), ai_out.get(col, "Nil")) for col in COLUMNS}
+    return final
 
 # -------------------------------------------------
 # Excel writer
 # -------------------------------------------------
+
 def styled_excel(df: pd.DataFrame) -> BytesIO:
     output = BytesIO()
     today_str = datetime.today().strftime("%d/%m/%Y")
     title = f"Consolidated Daily Status Report of All IRBn/Bns as on {today_str}"
 
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         wb = writer.book
         ws = wb.add_worksheet("IRBn Report")
         writer.sheets["IRBn Report"] = ws
@@ -292,17 +374,17 @@ def styled_excel(df: pd.DataFrame) -> BytesIO:
 
         ws.merge_range(f"A1:{last_col}1", title, title_fmt)
         ws.set_row(0, 28)
-        ws.write_row("A3", headers, header_fmt)
+        ws.write_row('A3', headers, header_fmt)
         ws.set_row(2, 22)
 
         start_row = 3
-        for r, row in enumerate(df.itertuples(index=False), start=start_row):
-            ws.write_number(r, 0, r - 2, cell_fmt)
-            for c, val in enumerate(row, start=1):
-                ws.write(r, c, val, cell_fmt)
+        for ridx, row in enumerate(df.itertuples(index=False), start=start_row):
+            ws.write_number(ridx, 0, ridx - 2, cell_fmt)
+            for cidx, val in enumerate(row, start=1):
+                ws.write(ridx, cidx, val, cell_fmt)
 
-        for i, head in enumerate(headers):
-            ws.set_column(i, i, COLUMN_WIDTHS.get(head, 25))
+        for col_idx, head in enumerate(headers):
+            ws.set_column(col_idx, col_idx, COLUMN_WIDTHS.get(head, 25))
 
         ws.freeze_panes(start_row, 1)
 
@@ -312,66 +394,59 @@ def styled_excel(df: pd.DataFrame) -> BytesIO:
 # -------------------------------------------------
 # Session state
 # -------------------------------------------------
-if "report_data" not in st.session_state:
-    st.session_state["report_data"] = []
+if 'report_data' not in st.session_state:
+    st.session_state['report_data'] = []
 
 # -------------------------------------------------
-# Sidebar
+# Sidebar options
 # -------------------------------------------------
 st.sidebar.header("⚙️ Options")
-use_ai = st.sidebar.checkbox("Enable AI assist (DistilBERT)", value=True)
-qa_pipe = load_qa_pipeline() if use_ai else None
+use_ai = st.sidebar.checkbox("Enable AI assist (DistilBERT)", value=True,
+                             help="Runs a QA model to verify/fill fields. Falls back silently if model not available.")
+qa_pipe = load_qa() if use_ai else None
 if use_ai and qa_pipe is None:
-    st.sidebar.warning("Could not load the QA model. Falling back to regex only.")
+    st.sidebar.warning("QA model not loaded; continuing with regex/parsers only.")
 
-batch_mode = st.sidebar.checkbox("Batch paste (split by delimiter)", value=False)
+batch_mode = st.sidebar.checkbox("Batch paste (split by delimiter)", value=False,
+                                 help="Split input by --- or ##### or ===")
 
 # -------------------------------------------------
 # Input form
 # -------------------------------------------------
 with st.form("input_form"):
-    input_text = st.text_area("📨 Paste WhatsApp Report Text Below", height=350)
+    text = st.text_area("📨 Paste WhatsApp Report Text Below", height=350)
     submitted = st.form_submit_button("➕ Extract & Add to Report")
-
     if submitted:
-        if input_text.strip():
-            texts = [input_text]
+        if text.strip():
+            texts = [text]
             if batch_mode:
-                for delim in DELIMITERS:
-                    if delim in input_text:
-                        texts = [t.strip() for t in input_text.split(delim) if t.strip()]
+                for d in DELIMITERS:
+                    if d in text:
+                        texts = [t.strip() for t in text.split(d) if t.strip()]
                         break
-
             added = 0
             for t in texts:
-                # 1. Strict parser
-                row = parse_standard_template(t)
-                if all(row.get(col, "Nil") == "Nil" for col in COLUMNS[1:]):
-                    # fallback: regex + AI
-                    regex_out = extract_regex_fields(t)
-                    ai_out = ai_extract_fields(t, qa_pipe)
-                    row = {col: choose_best(regex_out.get(col, "Nil"), ai_out.get(col, "Nil")) for col in COLUMNS}
-                st.session_state["report_data"].append(row)
+                row = extract_fields(t, qa_pipe)
+                st.session_state['report_data'].append(row)
                 added += 1
-
             st.success(f"✅ Extracted and added {added} report(s).")
         else:
             st.warning("⚠️ Please paste a report before submitting.")
 
 # -------------------------------------------------
-# Display & Download
+# Display & download
 # -------------------------------------------------
-if st.session_state["report_data"]:
+if st.session_state['report_data']:
     st.markdown("### 📄 Today's Reports (Live View)")
-    df = pd.DataFrame(st.session_state["report_data"], columns=COLUMNS)
+    df = pd.DataFrame(st.session_state['report_data'], columns=COLUMNS)
     df.index = df.index + 1
     st.dataframe(df, use_container_width=True)
 
-    xls_bytes = styled_excel(df)
-    st.download_button("📅 Download Styled Excel Report", data=xls_bytes, file_name="IRBn_Consolidated_Report.xlsx")
+    xls = styled_excel(df)
+    st.download_button("📅 Download Styled Excel Report", data=xls, file_name="IRBn_Consolidated_Report.xlsx")
 
     if st.button("🔁 Reset Table for New Day"):
-        st.session_state["report_data"] = []
+        st.session_state['report_data'] = []
         st.success("✅ Table reset for a new report cycle.")
 else:
     st.info("No reports added yet.")
