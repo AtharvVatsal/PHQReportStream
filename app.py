@@ -4,10 +4,6 @@ import re
 from io import BytesIO
 from datetime import datetime
 import xlsxwriter
-import nltk
-from nltk.tokenize import sent_tokenize
-
-nltk.download('punkt')
 
 st.set_page_config(page_title="IRBn ReportStream v3", layout="wide")
 st.title("📋 IRBn ReportStream v3 — Styled Excel Report")
@@ -20,21 +16,6 @@ def normalize(val):
     if not val or val.strip().lower() in ["none", "nil", "no", "no issue", "n/a", "not applicable", "-", ""]:
         return "Nil"
     return val.strip()
-
-def extract_reserves_clean(text):
-    match = re.search(r"(?i)1\..*?Reserves.*?(?=\n\d+\.|\n*Stay arrangements|\Z)", text, re.DOTALL)
-    if not match:
-        return "Nil"
-
-    sentences = sent_tokenize(match.group(0))
-    cleaned = []
-    for sent in sentences:
-        sent_text = sent.strip()
-        if any(kw in sent_text.lower() for kw in ["reserve", "incharge", "duration", "deployed", "duty", "strength", "official"]):
-            clean = re.sub(r"^[\-*\d.\)\s]+", "", sent_text)
-            if clean:
-                cleaned.append(normalize(clean))
-    return "; ".join(cleaned) if cleaned else "Nil"
 
 def extract_fields_v3_10(text):
     def find(patterns, join_lines=False, fallback="Nil"):
@@ -53,7 +34,15 @@ def extract_fields_v3_10(text):
         r"Bn\s+No\.? and Location\s*[:\-]\s*(.*?)\n"
     ])
 
-    reserves_clean = extract_reserves_clean(text)
+    reserves_block = re.search(r"(?i)1\..*?Reserves.*?(?=2\.|Stay arrangements|\Z)", text, re.DOTALL)
+    reserves_clean = "Nil"
+    if reserves_block:
+        lines = reserves_block.group(0).splitlines()
+        cleaned = []
+        for line in lines:
+            if any(keyword in line.lower() for keyword in ["reserve", "duration", "incharge", "official", "strength"]):
+                cleaned.append(line.strip("-* "))
+        reserves_clean = "; ".join([normalize(e) for e in cleaned if len(e) > 2])
 
     districts = re.findall(r"(?i)(?:(?:district|distt)\.?|district of)\s*([A-Z][a-z]+)", text)
     ps_pp_matches = re.findall(r"(?i)(?:PS|PP)\s+([A-Z][a-z]+)", text)
@@ -70,7 +59,7 @@ def extract_fields_v3_10(text):
         "Messing Arrangements": find([
             r"Messing arrangements.*?:\s*(.*?)\n",
             r"Mess arrangements.*?:\s*(.*?)\n",
-            r"food.*?(?:arranged|available).*?([^\.\n]*)"
+            r"food.*?(?:arranged|available).*?([^.\n]*)"
         ], join_lines=True),
         "CO's last Interaction with SP": find([
             r"(?:spoke.*?SP.*?|visited.*?)\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
@@ -93,7 +82,6 @@ def extract_fields_v3_10(text):
         "Welfare Initiative in Last 24 Hrs": find([
             r"welfare.*?:\s*(.*?)\n",
             r"CSR.*?:\s*(.*?)\n",
-            r"workshop.*?([^\.\n]*)",
             r"initiative.*?:\s*(.*?)\n"
         ], join_lines=True),
         "Reserves Available in Bn": find([
@@ -105,6 +93,7 @@ def extract_fields_v3_10(text):
             r"requires.*?attention.*?:\s*(.*?)\n"
         ])
     }
+
 with st.form("input_form"):
     input_text = st.text_area("📨 Paste WhatsApp Report Text Below", height=350)
     submitted = st.form_submit_button("➕ Extract & Add to Report")
