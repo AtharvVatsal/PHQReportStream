@@ -1,4 +1,12 @@
-streamlit
-pandas
-nltk
-xlsxwriter
+# Core app
+streamlit>=1.32,<2
+pandas>=2.2,<3
+xlsxwriter>=3.1,<4
+
+# Optional AI layer (DistilBERT via Transformers). Comment these out if you don’t use AI.
+transformers>=4.40,<5
+torch>=2.2,<3           # CPU wheel will auto-pick; choose cu* build if you have CUDA
+safetensors>=0.4,<1
+tokenizers>=0.15,<0.21
+huggingface-hub>=0.22,<1
+tqdm>=4.66,<5
