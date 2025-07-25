@@ -94,6 +94,16 @@ COLUMN_WIDTHS = {
 DELIMITERS = ["\n---\n", "\n#####\n", "\n===\n"]
 
 # Sidebar with grouped controls
+@st.cache_resource(show_spinner=False)
+def load_qa():
+    if not TRANSFORMERS_AVAILABLE:
+        return None
+    try:
+        tok = AutoTokenizer.from_pretrained("distilbert-base-uncased-distilled-squad")
+        mdl = AutoModelForQuestionAnswering.from_pretrained("distilbert-base-uncased-distilled-squad")
+        return pipeline("question-answering", model=mdl, tokenizer=tok)
+    except Exception:
+        return None
 
 st.sidebar.markdown("<h3 class='section-subtitle'>⚙️ Settings</h3>", unsafe_allow_html=True)
 with st.sidebar.expander("AI Assist", expanded=True):
