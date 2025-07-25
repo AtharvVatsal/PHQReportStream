@@ -12,7 +12,11 @@ try:
 except Exception:
     TRANSFORMERS_AVAILABLE = False
 
-st.set_page_config(page_title="IRBn ReportStream v3 FINAL", layout="wide")
+st.set_page_config(
+    page_title="IRBn ReportStream",
+    page_icon="assets/logo.png",
+    layout="wide"
+)
 
 st.markdown(
     """
@@ -50,11 +54,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown('<div class="report-title">📋 IRBn ReportStream v3 — FINAL<br><small>Strict Template + Smart Fallback + AI</small></div>', unsafe_allow_html=True)
+st.markdown('<div class="report-title">📋 IRBn ReportStream<br><small>Strict Template + Smart Fallback + AI</small></div>', unsafe_allow_html=True)
 st.caption("Build date: 22-Jul-2025")
 
 # Add optional logo (replace 'logo.png' with your actual asset)
-st.image("logo.png", width=120)
+st.image("assets/logo.png", width=120)
 
 COLUMNS = [
     "Name of IRBn/Bn",
@@ -155,4 +159,4 @@ if st.session_state.get('report_data'):
 else:
     st.info("No reports added yet.")
 
-st.markdown('<div class="footer-text">Powered by IRBn ReportStream v3 • © 2025</div>', unsafe_allow_html=True)
+st.markdown('<div class="footer-text">Powered by IRBn ReportStream • © 2025</div>', unsafe_allow_html=True)
