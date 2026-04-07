@@ -23,12 +23,12 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\output
 OutputBaseFilename=HPReportStream_Setup_v{#MyAppVersion}
-SetupIconFile=A:\Work\PHQReportStream\PHQReportStream\assets\Himachal_Pradesh_Police_Logo.ico
+SetupIconFile=..\assets\Himachal_Pradesh_Police_Logo.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
-WizardImageFile=A:\Work\PHQReportStream\PHQReportStream\assets\Himachal_Pradesh_Police_Logo.png
-WizardSmallImageFile=A:\Work\PHQReportStream\PHQReportStream\assets\Himachal_Pradesh_Police_Logo.png
+WizardImageFile=..\assets\Himachal_Pradesh_Police_Logo.png
+WizardSmallImageFile=..\assets\Himachal_Pradesh_Police_Logo.png
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -42,6 +42,9 @@ Name: "core"; Description: "HP Police ReportStream Application"; GroupDescriptio
 
 ; Desktop shortcut
 Name: "desktopicon"; Description: "Create Desktop Shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
+
+; Download spaCy model for Accurate mode
+Name: "spacy"; Description: "Download spaCy AI Model (~100MB) - Required for Accurate Mode"; GroupDescription: "AI Components:"; Flags: unchecked
 
 ; Ollama for LLM mode
 Name: "ollama"; Description: "Install Ollama (Required for LLM Mode) - ~100MB"; GroupDescription: "AI Components:"; Flags: unchecked
@@ -64,6 +67,101 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch HP Police ReportStream";
 Type: filesandordirs; Name: "{app}"
 
 [Code]
+// Check if Python is installed
+function IsPythonInstalled(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := False;
+  if FileExists(ExpandConstant('{pf}\Python312\python.exe')) then
+    Result := True
+  else if FileExists(ExpandConstant('{pf}\Python311\python.exe')) then
+    Result := True
+  else if FileExists(ExpandConstant('{pf}\Python310\python.exe')) then
+    Result := True
+  else if FileExists(ExpandConstant('{pf}\Python39\python.exe')) then
+    Result := True
+  else if FileExists(ExpandConstant('{cmd}\python.exe')) then
+    Result := True;
+end;
+
+// Check if spaCy model is installed
+function IsSpacyModelInstalled(): Boolean;
+var
+  PythonPath: String;
+begin
+  Result := False;
+  
+  // Check common Python locations
+  if FileExists(ExpandConstant('{pf}\Python312\python.exe')) then
+    PythonPath := ExpandConstant('{pf}\Python312\python.exe')
+  else if FileExists(ExpandConstant('{pf}\Python311\python.exe')) then
+    PythonPath := ExpandConstant('{pf}\Python311\python.exe')
+  else if FileExists(ExpandConstant('{pf}\Python310\python.exe')) then
+    PythonPath := ExpandConstant('{pf}\Python310\python.exe')
+  else if FileExists(ExpandConstant('{pf}\Python39\python.exe')) then
+    PythonPath := ExpandConstant('{pf}\Python39\python.exe')
+  else
+    Exit;
+    
+  // Check if spaCy model exists in common locations
+  if FileExists(ExpandConstant('{localappdata}\Programs\Python\Python312\Lib\site-packages\spacy\en_core_web_trf\__init__.py')) then
+    Result := True
+  else if FileExists(ExpandConstant('{localappdata}\Programs\Python\Python311\Lib\site-packages\spacy\en_core_web_trf\__init__.py')) then
+    Result := True
+  else if FileExists(ExpandConstant('{pf}\Python312\Lib\site-packages\spacy\en_core_web_trf\__init__.py')) then
+    Result := True
+  else if FileExists(ExpandConstant('{pf}\Python311\Lib\site-packages\spacy\en_core_web_trf\__init__.py')) then
+    Result := True;
+end;
+
+// Download and install spaCy model
+procedure InstallSpacyModel();
+var
+  PythonPath: String;
+  ResultCode: Integer;
+begin
+  PythonPath := '';
+  
+  // Find Python
+  if FileExists(ExpandConstant('{pf}\Python312\python.exe')) then
+    PythonPath := ExpandConstant('{pf}\Python312\python.exe')
+  else if FileExists(ExpandConstant('{pf}\Python311\python.exe')) then
+    PythonPath := ExpandConstant('{pf}\Python311\python.exe')
+  else if FileExists(ExpandConstant('{pf}\Python310\python.exe')) then
+    PythonPath := ExpandConstant('{pf}\Python310\python.exe')
+  else if FileExists(ExpandConstant('{pf}\Python39\python.exe')) then
+    PythonPath := ExpandConstant('{pf}\Python39\python.exe')
+  else if FileExists(ExpandConstant('{cmd}\python.exe')) then
+    PythonPath := ExpandConstant('{cmd}\python.exe');
+    
+  if PythonPath = '' then
+  begin
+    MsgBox('Python not found. Please install Python 3.9 or higher from https://python.org',
+           mbError, MB_OK);
+    Exit;
+  end;
+  
+  MsgBox('Downloading spaCy AI model (~100MB)...' + #13#10 + #13#10 +
+         'This may take several minutes depending on your internet speed.',
+         mbInformation, MB_OK);
+         
+  // Download spaCy model
+  Exec(PythonPath, '-m spacy download en_core_web_trf', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  
+  if ResultCode = 0 then
+  begin
+    MsgBox('spaCy model downloaded successfully!' + #13#10 + #13#10 +
+           'Accurate mode is now ready to use.', mbInformation, MB_OK)
+  end
+  else
+  begin
+    MsgBox('Failed to download spaCy model.' + #13#10 + #13#10 +
+           'You can manually run: pip install https://hppolice.gov.in/models/en_core_web_trf',
+           mbError, MB_OK);
+  end;
+end;
+
 // Check if Ollama is already installed
 function IsOllamaInstalled(): Boolean;
 var
@@ -149,9 +247,18 @@ begin
     MsgBox('HP Police ReportStream has been installed!' + #13#10 + #13#10 +
            'Available AI Modes:' + #13#10 +
            '- Fast Mode: Regex + Typo Dictionary (no extra installation)' + #13#10 +
-           '- Accurate Mode: spaCy NER + DistilBERT (included)' + #13#10 +
+           '- Accurate Mode: spaCy NER + DistilBERT (requires download)' + #13#10 +
            '- LLM Mode: Ollama + Mistral (requires installation)',
            mbInformation, MB_OK);
+
+    // If spaCy task selected
+    if IsTaskSelected('spacy') then
+    begin
+      if not IsSpacyModelInstalled() then
+        InstallSpacyModel()
+      else
+        MsgBox('spaCy model is already installed!', mbInformation, MB_OK);
+    end;
 
     // If Ollama task selected
     if IsTaskSelected('ollama') then

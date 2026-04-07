@@ -1,0 +1,219 @@
+# HP Police ReportStream .gitignore
+
+# ===========================================
+# PYTHON
+# ===========================================
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff
+*.log
+local_settings.py
+
+# Flask stuff
+instance/
+.webassets-cache
+
+# Scrapy stuff
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# ===========================================
+# PROJECT SPECIFIC
+# ===========================================
+
+# Database - local file, regenerate on first run
+*.db
+*.sqlite
+*.sqlite3
+phq_reports.db
+
+# Output - generated installer
+output/
+
+# Root models - download separately
+models/
+
+# Installer models - download during install (478MB spaCy model)
+installer/models/
+
+# Installer inner folder - download separately
+installer/installer/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Windows thumbnail cache
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ===========================================
+# IDEs
+# ===========================================
+
+# VSCode
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# PyCharm
+.idea/
+
+# Eclipse
+.settings/
+.classpath
+.project
+
+# NetBeans
+nbproject/private/
+build/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+# IntelliJ IDEA
+*.iml
+out/
+
+# Emacs
+*~
+
+# ===========================================
+# OS
+# ===========================================
+
+# MacOS
+.DS_Store
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+*.stackdump
+
+# Linux
+.*.swp
+.*~
+~
+
+# ===========================================
+# BUILD ARTIFACTS
+# ===========================================
+
+# Compiled executables
+*.exe
+*.msi
+*.dmg
+
+# Distribution folder (PyInstaller output)
+dist/
